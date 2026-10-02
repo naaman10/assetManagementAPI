@@ -1,2 +1,2 @@
-/** Drizzle table modules are exported from this file. */
-export {};
+export { sessions } from "./sessions.js";
+export { users } from "./users.js";

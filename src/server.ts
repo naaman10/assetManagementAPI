@@ -1,9 +1,11 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
+import { migrateDatabase } from "./db/migrate.js";
 import { createServices } from "./services.js";
 
 const services = createServices(env);
+await migrateDatabase(services.db);
 const app = createApp(services);
 
 const server = serve(

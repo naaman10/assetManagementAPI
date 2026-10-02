@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { env } from "./config/env.js";
+import { auth } from "./routes/auth.js";
 import { health } from "./routes/health.js";
 import type { Services } from "./services.js";
 import type { AppEnv } from "./types.js";
@@ -23,6 +24,7 @@ export function createApp(services: Services) {
   });
 
   app.route("/", health);
+  app.route("/", auth);
 
   app.notFound((c) => c.json({ error: "Not found" }, 404));
   app.onError((error, c) => {
