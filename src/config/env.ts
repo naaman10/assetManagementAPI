@@ -10,9 +10,19 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1),
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   GOOGLE_REDIRECT_URI: z.string().url(),
-  RESEND_API_KEY: z.string().min(1),
-  EMAIL_FROM: z.string().min(1),
+  RESEND_API_KEY: optionalEnv(),
+  EMAIL_FROM: optionalEnv(),
 });
+
+function optionalEnv() {
+  return z
+    .string()
+    .optional()
+    .transform((value) => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    });
+}
 
 export type Env = z.infer<typeof envSchema>;
 

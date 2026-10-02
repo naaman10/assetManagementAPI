@@ -2,7 +2,7 @@
 
 API for the asset management web app. This service is hosted on Render. The web app is a separate Next.js project on Vercel and forwards browser requests from `/api/*` to this service.
 
-Authenticated feature endpoints are not implemented yet. The process boots with Neon, Google OAuth, and Resend configured, and exposes `GET /health` so Render and the web app can check that it is up.
+Authenticated feature endpoints are not implemented yet. The process boots with Neon and Google OAuth configured, and exposes `GET /health` so Render and the web app can check that it is up. Outbound email stays off until Resend is configured.
 
 ## Stack
 
@@ -51,8 +51,8 @@ Set `API_URL=http://localhost:3001` in the web app to proxy `/api/health` here.
 | `GOOGLE_CLIENT_ID` | Google OAuth web client id. |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth web client secret. |
 | `GOOGLE_REDIRECT_URI` | OAuth callback on this API. |
-| `RESEND_API_KEY` | Resend API key. |
-| `EMAIL_FROM` | Verified From address for outbound email. |
+| `RESEND_API_KEY` | Optional. Resend API key. Email stays disabled until this and `EMAIL_FROM` are both set. |
+| `EMAIL_FROM` | Optional. Verified From address for outbound email. |
 
 ## Database
 
