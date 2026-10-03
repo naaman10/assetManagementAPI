@@ -1,3 +1,5 @@
+export { clientContacts } from "./clientContacts.js";
+export { clients } from "./clients.js";
 export { permissions } from "./permissions.js";
 export { rolePermissions } from "./rolePermissions.js";
 export { roles } from "./roles.js";

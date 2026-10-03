@@ -7,6 +7,10 @@ export const ROLES_CREATE = "roles:create";
 export const ROLES_EDIT = "roles:edit";
 export const ROLES_DELETE = "roles:delete";
 export const PERMISSIONS_VIEW = "permissions:view";
+export const CLIENTS_VIEW = "clients:view";
+export const CLIENTS_CREATE = "clients:create";
+export const CLIENTS_EDIT = "clients:edit";
+export const CLIENTS_DELETE = "clients:delete";
 export const ADMIN_ROLE = "admin";
 
 export const SEEDED_PERMISSIONS = [
@@ -19,6 +23,10 @@ export const SEEDED_PERMISSIONS = [
   { name: ROLES_EDIT, description: "Update roles and their permissions." },
   { name: ROLES_DELETE, description: "Delete roles." },
   { name: PERMISSIONS_VIEW, description: "List the permission catalog." },
+  { name: CLIENTS_VIEW, description: "List and read clients and their contacts." },
+  { name: CLIENTS_CREATE, description: "Create clients." },
+  { name: CLIENTS_EDIT, description: "Update clients, logos, and contacts." },
+  { name: CLIENTS_DELETE, description: "Delete clients." },
 ] as const;
 
 export const LEGACY_PERMISSIONS: Record<string, readonly string[]> = {

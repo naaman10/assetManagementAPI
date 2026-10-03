@@ -15,6 +15,8 @@
     "db:migrate": "node --env-file=.env ./node_modules/drizzle-kit/bin.cjs migrate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "@hono/node-server": "^2.1.3",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.12",

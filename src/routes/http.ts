@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import type { ZodError } from "zod";
 import { AccessError } from "../auth/access.js";
 import { Auth0RequestError } from "../auth/management.js";
+import { AssetStorageError } from "../storage/assets.js";
 import type { AppEnv } from "../types.js";
 
 export async function readBody(c: Context) {
@@ -32,6 +33,10 @@ export function routeError(c: Context<AppEnv>, error: unknown) {
 
     console.error("Auth0 management request failed", error);
     return c.json({ error: "Auth0 request failed." }, 502);
+  }
+
+  if (error instanceof AssetStorageError) {
+    return c.json({ error: error.message }, 502);
   }
 
   if (isUniqueViolation(error)) {

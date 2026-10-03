@@ -35,9 +35,11 @@ src/
   routes/users.ts        user management
   routes/roles.ts        role management
   routes/permissions.ts  permission catalog
+  routes/clients.ts      clients, contacts, and logos
+  storage/assets.ts      Neon assets bucket
 ```
 
-Route handlers should read clients from `c.get("services")` rather than constructing them again.
+Route handlers should read services from `c.get("services")` rather than constructing them again.
 
 ## Local development
 
@@ -124,6 +126,28 @@ Create a user with `{ "email", "password", "name", "roleIds" }`. `name` and `rol
 
 A user response is `{ "id", "email", "name", "picture", "disabled", "roles", "permissions", "createdAt", "updatedAt" }`. A role response includes its permissions. Invalid JSON or fields return `400`. A duplicate email or role name returns `409`.
 
+## Clients
+
+These routes require the session cookie. Contacts use the parent client's permission. There is no separate contact permission. The `admin` role receives `clients:view`, `clients:create`, `clients:edit`, and `clients:delete` on the next boot.
+
+| Action | Request | Permission |
+| --- | --- | --- |
+| List clients | `GET /clients` | `clients:view` |
+| Create client | `POST /clients` | `clients:create` |
+| Read client | `GET /clients/:id` | `clients:view` |
+| Update client | `PATCH /clients/:id` | `clients:edit` |
+| Upload logo | `PUT /clients/:id/logo` | `clients:edit` |
+| Delete client | `DELETE /clients/:id` | `clients:delete` |
+| Add contact | `POST /clients/:id/contacts` | `clients:edit` |
+| Update contact | `PATCH /clients/:id/contacts/:contactId` | `clients:edit` |
+| Delete contact | `DELETE /clients/:id/contacts/:contactId` | `clients:edit` |
+
+Create a client with `{ "name", "address", "contacts" }`. `contacts` is optional. `address` is `{ "line1", "line2", "city", "county", "postcode", "country" }`. `line1`, `city`, `postcode`, and `country` are required. A contact is `{ "name", "role", "email", "telephone" }`. `role` is a job title. `role`, `email`, and `telephone` are optional. Update a client with any of `{ "name", "address" }`. An address update may send only the fields that changed. Contacts are added, updated, and deleted on their own routes.
+
+A client response is `{ "id", "name", "logoUrl", "address", "contacts", "createdAt", "updatedAt" }`. `logoUrl` is a presigned read URL that lasts one hour, or `null`. The stored object key is not returned. Each contact includes `id`, `name`, `role`, `email`, `telephone`, `createdAt`, and `updatedAt`. Create client and add contact return `201`. Delete client and delete contact return `{ "ok": true }`. An unknown client or contact returns `404`.
+
+Upload a logo as multipart form data with one field named `logo`. The file must be a JPEG, PNG, or WebP image of 2 MB or less. The API stores it in the private Neon `assets` bucket and replaces any previous logo. Deleting a client deletes its logo and its contacts.
+
 ## Auth0 setup
 
 Auth0 checks the password. This API creates the account, stores the profile, and decides which roles that person has. Do not create users, roles, or permissions in the Auth0 dashboard. Do not create an Auth0 API for this product.
@@ -188,10 +212,17 @@ Use the same Auth0 applications locally and on Render.
 | `WEB_APP_ORIGIN` | `http://localhost:3000` | `https://<your-web-app-host>` |
 | `BOOTSTRAP_ADMIN_EMAIL` | Your email | Same email |
 | `BOOTSTRAP_ADMIN_PASSWORD` | A password that meets the Auth0 policy | Same password, until the first boot succeeds |
+| `AWS_ACCESS_KEY_ID` | Neon storage access key | Same access key |
+| `AWS_SECRET_ACCESS_KEY` | Neon storage secret | Same secret |
+| `AWS_ENDPOINT_URL_S3` | Branch storage endpoint | Same endpoint |
+| `AWS_REGION` | Storage region, such as `us-east-2` | Same region |
+| `ASSETS_BUCKET` | `assets` | `assets` |
 
 `AUTH0_DOMAIN` is the hostname only. `WEB_APP_ORIGIN` is the web app origin allowed by CORS, with no path.
 
 Remove `AUTH0_REDIRECT_URI` and `AUTH0_AUDIENCE` if they are still set. Sign-in no longer redirects to Auth0.
+
+Create Neon storage credentials for the same branch as `DATABASE_URL`, with `storage:read` and `storage:write`. The `assets` bucket stays private. Render does not inject these values.
 
 ### 6. Start the API and sign in
 
@@ -205,7 +236,7 @@ A role change is saved in the database and applies on the next request. The pers
 
 ## Render
 
-`render.yaml` lists the Auth0 and bootstrap variables with `sync: false`. Set them in the Render dashboard for `asset-management-api` before deploying. Remove `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `AUTH0_REDIRECT_URI`, and `AUTH0_AUDIENCE` if they are still present. The process validates the environment at boot, so a deploy without the Auth0 sign-in and management values fails and the service stays down.
+`render.yaml` lists the Auth0, storage, and bootstrap variables with `sync: false`. Set them in the Render dashboard for `asset-management-api` before deploying. Remove `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `AUTH0_REDIRECT_URI`, and `AUTH0_AUDIENCE` if they are still present. The process validates the environment at boot, so a deploy without the Auth0 sign-in, management, and Neon storage values fails and the service stays down.
 
 Set the bootstrap email and password for the first deploy. After the admin can sign in, delete `BOOTSTRAP_ADMIN_PASSWORD` and redeploy.
 
