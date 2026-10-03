@@ -16,7 +16,6 @@ const envSchema = z.object({
     }),
   AUTH0_CLIENT_ID: z.string().min(1),
   AUTH0_CLIENT_SECRET: z.string().min(1),
-  AUTH0_REDIRECT_URI: z.string().url(),
   AUTH0_MGMT_CLIENT_ID: z.string().min(1),
   AUTH0_MGMT_CLIENT_SECRET: z.string().min(1),
   BOOTSTRAP_ADMIN_EMAIL: optionalEnv(),

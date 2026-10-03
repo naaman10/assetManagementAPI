@@ -2,7 +2,7 @@
 
 API for the asset management web app. This service is hosted on Render. The web app is a separate Next.js project on Vercel and forwards browser requests from `/api/*` to this service.
 
-The process boots with Neon and Auth0 configured, and exposes `GET /health` so Render and the web app can check that it is up. Sign-in is an Auth0 username-and-password flow. Auth0 stores passwords only. This API stores users, roles, and permissions, and it is where accounts are created. Public registration is disabled. Outbound email stays off until Resend is configured.
+The process boots with Neon and Auth0 configured, and exposes `GET /health` so Render and the web app can check that it is up. Sign-in is an email and password form on the web app. This API checks the password with Auth0 and sets the session cookie. The browser does not visit Auth0's login page. Auth0 stores passwords only. This API stores users, roles, and permissions, and it is where accounts are created. Public registration is disabled. Outbound email stays off until Resend is configured.
 
 ## Stack
 
@@ -24,7 +24,7 @@ src/
   db/schema/             table definitions
   db/migrate.ts          applies Drizzle migrations on startup
   db/bootstrap.ts        seeds permissions and the first admin
-  auth/auth0.ts          Auth0 authorize URL, token exchange, and logout URL
+  auth/auth0.ts          Auth0 password check and token verification
   auth/management.ts     Auth0 Management API client
   auth/access.ts         role and permission checks
   auth/session.ts        session cookie and database session
@@ -61,7 +61,6 @@ Set `API_URL=http://localhost:3001` in the web app to proxy `/api/health` here.
 | `AUTH0_DOMAIN` | Auth0 tenant hostname, with no scheme or path. |
 | `AUTH0_CLIENT_ID` | Auth0 Regular Web Application client id. Used for sign-in. |
 | `AUTH0_CLIENT_SECRET` | Auth0 Regular Web Application client secret. |
-| `AUTH0_REDIRECT_URI` | Web app callback URL. Next.js proxies it to `GET /auth/callback`. |
 | `AUTH0_MGMT_CLIENT_ID` | Auth0 Machine-to-Machine application client id. Used to create and update logins. |
 | `AUTH0_MGMT_CLIENT_SECRET` | Auth0 Machine-to-Machine application client secret. |
 | `BOOTSTRAP_ADMIN_EMAIL` | Optional. Email of the first admin. Set with the password until that admin exists. |
@@ -77,16 +76,17 @@ The browser must stay on the web app host. The Next.js app proxies `/api/*` to t
 
 | Action | Web app request | This API |
 | --- | --- | --- |
-| Start sign-in | Navigate to `/api/auth/login` | `GET /auth/login` |
-| Auth0 returns | `/api/auth/callback` | `GET /auth/callback` |
+| Sign in | `POST /api/auth/login` with `{ "email", "password" }` | `POST /auth/login` |
 | Read the signed-in user | `GET /api/auth/me` | `GET /auth/me` |
 | Log out | `POST /api/auth/logout` | `POST /auth/logout` |
 
-`GET /auth/me` returns `{ "user": { "id", "email", "name", "picture", "roles", "permissions" } }`. `picture` may be null. `roles` is `{ "id", "name" }[]`. `permissions` is the string list granted by those roles, loaded from the database on each request. A missing or expired session returns `401`. After a successful sign-in the API redirects the browser to `WEB_APP_ORIGIN`. A failed sign-in redirects there with `auth_error` set to `access_denied`, `invalid_state`, or `auth_failed`.
+`POST /auth/login` checks the password with Auth0, then sets the session cookie. A successful response is `{ "user": { "id", "email", "name", "picture", "roles", "permissions" } }`. An unknown user, a wrong password, or a disabled account returns `401` with `{ "error": "Invalid email or password." }`. A malformed body returns `400`.
+
+`GET /auth/me` returns the same user object. `picture` may be null. `roles` is `{ "id", "name" }[]`. `permissions` is the string list granted by those roles, loaded from the database on each request. A missing or expired session returns `401`.
 
 Only a user already created in this API can sign in. An Auth0 account with no local user is rejected. A disabled user is rejected, and an existing session for that user stops working on the next request.
 
-`POST /auth/logout` deletes the local session and returns `{ "ok": true, "logoutUrl" }`. The browser must then navigate to `logoutUrl` so Auth0 ends its own session.
+`POST /auth/logout` deletes the local session and returns `{ "ok": true }`. There is no Auth0 browser session to end.
 
 Protected routes should use the `requireUser` middleware. It loads the session user onto `c.get("user")`. Routes that need a permission should use `requirePermission("users:manage")`, which returns `401` when the session is missing and `403` when the permission is absent. A role change applies on the next request.
 
@@ -154,32 +154,10 @@ This application holds the secret used when a person signs in. Do not create a S
 1. Open **Applications → Applications → Create Application**.
 2. Name it `Asset Management`.
 3. Choose **Regular Web Application** and create it.
-4. On **Settings**, set these boxes. Do not add a trailing slash.
+4. Open **Advanced Settings → Grant Types**. Turn **Password** on. Turn **Implicit** off. Save.
+5. Copy **Client ID** and **Client Secret**. Those are `AUTH0_CLIENT_ID` and `AUTH0_CLIENT_SECRET`.
 
-   **Allowed Callback URLs**
-
-   ```
-   http://localhost:3000/api/auth/callback
-   https://<your-web-app-host>/api/auth/callback
-   ```
-
-   **Allowed Logout URLs**
-
-   ```
-   http://localhost:3000
-   https://<your-web-app-host>
-   ```
-
-   **Allowed Web Origins**
-
-   ```
-   http://localhost:3000
-   https://<your-web-app-host>
-   ```
-
-5. Open **Advanced Settings → Grant Types**. Leave **Authorization Code** on. Turn **Implicit** off.
-6. Save.
-7. Copy **Client ID** and **Client Secret**. Those are `AUTH0_CLIENT_ID` and `AUTH0_CLIENT_SECRET`.
+No callback URL is required. The password form stays on the web app, and this API sends the credentials to Auth0.
 
 ### 4. Create the management application
 
@@ -201,7 +179,7 @@ If the application already exists, open **Applications → APIs → Auth0 Manage
 
 ### 5. Put the values in the environment
 
-Use the same Auth0 applications locally and on Render. Only the callback and the site address change.
+Use the same Auth0 applications locally and on Render.
 
 | Variable | Local | Render |
 | --- | --- | --- |
@@ -210,20 +188,19 @@ Use the same Auth0 applications locally and on Render. Only the callback and the
 | `AUTH0_CLIENT_SECRET` | Sign-in client secret | Same client secret |
 | `AUTH0_MGMT_CLIENT_ID` | Management client ID | Same client ID |
 | `AUTH0_MGMT_CLIENT_SECRET` | Management client secret | Same client secret |
-| `AUTH0_REDIRECT_URI` | `http://localhost:3000/api/auth/callback` | `https://<your-web-app-host>/api/auth/callback` |
 | `WEB_APP_ORIGIN` | `http://localhost:3000` | `https://<your-web-app-host>` |
 | `BOOTSTRAP_ADMIN_EMAIL` | Your email | Same email |
 | `BOOTSTRAP_ADMIN_PASSWORD` | A password that meets the Auth0 policy | Same password, until the first boot succeeds |
 
-`AUTH0_DOMAIN` is the hostname only. `AUTH0_REDIRECT_URI` must match an Allowed Callback URL character for character. `WEB_APP_ORIGIN` is the site the browser returns to after sign-in, with no path.
+`AUTH0_DOMAIN` is the hostname only. `WEB_APP_ORIGIN` is the web app origin allowed by CORS, with no path.
 
-Remove `AUTH0_AUDIENCE` if it is still set. This API no longer reads permissions from Auth0 tokens.
+Remove `AUTH0_REDIRECT_URI` and `AUTH0_AUDIENCE` if they are still set. Sign-in no longer redirects to Auth0.
 
 ### 6. Start the API and sign in
 
 1. Start the API. On boot it creates the `users:manage` and `roles:manage` permissions, the `admin` role, an Auth0 login for `BOOTSTRAP_ADMIN_EMAIL`, and a local admin user.
 2. If that email already has an Auth0 login, the API links it and does not change the password. Sign in with the existing password.
-3. Open `http://localhost:3000/api/auth/login` and sign in as that admin.
+3. Sign in from the web app form. That posts to `/api/auth/login`. Do not send the browser to Auth0.
 4. Create every later user, role, and permission from the app. Do not add them in the Auth0 dashboard.
 5. After `GET /api/auth/me` shows the admin user, remove `BOOTSTRAP_ADMIN_PASSWORD` from the environment and restart. Leave the email unset as well, or leave both. The admin already exists, so later boots will not reset the password.
 
@@ -231,7 +208,7 @@ A role change is saved in the database and applies on the next request. The pers
 
 ## Render
 
-`render.yaml` lists the Auth0 and bootstrap variables with `sync: false`. Set them in the Render dashboard for `asset-management-api` before deploying. Remove `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, and `AUTH0_AUDIENCE` if they are still present. The process validates the environment at boot, so a deploy without the Auth0 sign-in and management values fails and the service stays down.
+`render.yaml` lists the Auth0 and bootstrap variables with `sync: false`. Set them in the Render dashboard for `asset-management-api` before deploying. Remove `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `AUTH0_REDIRECT_URI`, and `AUTH0_AUDIENCE` if they are still present. The process validates the environment at boot, so a deploy without the Auth0 sign-in and management values fails and the service stays down.
 
 Set the bootstrap email and password for the first deploy. After the admin can sign in, delete `BOOTSTRAP_ADMIN_PASSWORD` and redeploy.
 
