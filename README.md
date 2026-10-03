@@ -34,7 +34,7 @@ src/
   routes/auth.ts         Auth0 sign-in, current user, and logout
   routes/users.ts        user management
   routes/roles.ts        role management
-  routes/permissions.ts  permission management
+  routes/permissions.ts  permission catalog
 ```
 
 Route handlers should read clients from `c.get("services")` rather than constructing them again.
@@ -88,7 +88,7 @@ Only a user already created in this API can sign in. An Auth0 account with no lo
 
 `POST /auth/logout` deletes the local session and returns `{ "ok": true }`. There is no Auth0 browser session to end.
 
-Protected routes should use the `requireUser` middleware. It loads the session user onto `c.get("user")`. Routes that need a permission should use `requirePermission("users:manage")`, which returns `401` when the session is missing and `403` when the permission is absent. A role change applies on the next request.
+Protected routes should use the `requireUser` middleware. It loads the session user onto `c.get("user")`. Routes that need a permission should use `requirePermission("users:view")`, which returns `401` when the session is missing and `403` when the permission is absent. A role change applies on the next request.
 
 Server-side calls from the Next.js app do not send the browser cookie unless the route forwards it:
 
@@ -102,30 +102,27 @@ const response = await apiFetch("/auth/me", { headers: { cookie } });
 
 ## User management
 
-These routes require the session cookie. `users:manage` can manage users and can read roles and permissions. `roles:manage` can manage roles and permissions. The seeded `admin` role has both. That role cannot be renamed or deleted, and those two permissions cannot be renamed or deleted. The API refuses a change that would leave no enabled user able to manage users. You cannot disable or delete your own account.
+These routes require the session cookie. Permissions are a fixed catalog seeded on startup. The app can list them and assign them to roles. It cannot create, rename, or delete a permission. The seeded `admin` role has every permission. That role cannot be renamed or deleted. The API refuses a change that would leave no enabled user able to edit users and edit roles. You cannot disable or delete your own account.
 
 Passwords are sent only to create or update a user. Responses never include them. Auth0's password policy can reject a password with `400` and Auth0's message.
 
 | Action | Request | Permission |
 | --- | --- | --- |
-| List users | `GET /users` | `users:manage` |
-| Create user | `POST /users` | `users:manage` |
-| Read user | `GET /users/:id` | `users:manage` |
-| Update user | `PATCH /users/:id` | `users:manage` |
-| Delete user | `DELETE /users/:id` | `users:manage` |
-| List roles | `GET /roles` | `users:manage` or `roles:manage` |
-| Create role | `POST /roles` | `roles:manage` |
-| Read role | `GET /roles/:id` | `users:manage` or `roles:manage` |
-| Update role | `PATCH /roles/:id` | `roles:manage` |
-| Delete role | `DELETE /roles/:id` | `roles:manage` |
-| List permissions | `GET /permissions` | `users:manage` or `roles:manage` |
-| Create permission | `POST /permissions` | `roles:manage` |
-| Update permission | `PATCH /permissions/:id` | `roles:manage` |
-| Delete permission | `DELETE /permissions/:id` | `roles:manage` |
+| List users | `GET /users` | `users:view` |
+| Create user | `POST /users` | `users:create` |
+| Read user | `GET /users/:id` | `users:view` |
+| Update user | `PATCH /users/:id` | `users:edit` |
+| Delete user | `DELETE /users/:id` | `users:delete` |
+| List roles | `GET /roles` | `roles:view`, `users:create`, or `users:edit` |
+| Create role | `POST /roles` | `roles:create` |
+| Read role | `GET /roles/:id` | `roles:view`, `users:create`, or `users:edit` |
+| Update role | `PATCH /roles/:id` | `roles:edit` |
+| Delete role | `DELETE /roles/:id` | `roles:delete` |
+| List permissions | `GET /permissions` | `permissions:view`, `roles:create`, or `roles:edit` |
 
-Create a user with `{ "email", "password", "name", "roleIds" }`. `name` and `roleIds` are optional. Update a user with any of `{ "email", "password", "name", "disabled", "roleIds" }`. `roleIds` replaces the user's roles. Create a role with `{ "name", "description", "permissionIds" }`. Create a permission with `{ "name", "description" }`. Permission names look like `assets:read`.
+Create a user with `{ "email", "password", "name", "roleIds" }`. `name` and `roleIds` are optional. `roleIds` may contain one role or several. Update a user with any of `{ "email", "password", "name", "disabled", "roleIds" }`. `roleIds` replaces the user's roles. Create a role with `{ "name", "description", "permissionIds" }`. `permissionIds` must be ids returned by `GET /permissions`.
 
-A user response is `{ "id", "email", "name", "picture", "disabled", "roles", "permissions", "createdAt", "updatedAt" }`. A role response includes its permissions. Invalid JSON or fields return `400`. A duplicate email, role name, or permission name returns `409`.
+A user response is `{ "id", "email", "name", "picture", "disabled", "roles", "permissions", "createdAt", "updatedAt" }`. A role response includes its permissions. Invalid JSON or fields return `400`. A duplicate email or role name returns `409`.
 
 ## Auth0 setup
 
@@ -198,10 +195,10 @@ Remove `AUTH0_REDIRECT_URI` and `AUTH0_AUDIENCE` if they are still set. Sign-in 
 
 ### 6. Start the API and sign in
 
-1. Start the API. On boot it creates the `users:manage` and `roles:manage` permissions, the `admin` role, an Auth0 login for `BOOTSTRAP_ADMIN_EMAIL`, and a local admin user.
+1. Start the API. On boot it seeds the permission catalog, gives every permission to the `admin` role, creates an Auth0 login for `BOOTSTRAP_ADMIN_EMAIL`, and creates a local admin user when nobody can edit users and roles.
 2. If that email already has an Auth0 login, the API links it and does not change the password. Sign in with the existing password.
 3. Sign in from the web app form. That posts to `/api/auth/login`. Do not send the browser to Auth0.
-4. Create every later user, role, and permission from the app. Do not add them in the Auth0 dashboard.
+4. Create every later user and role from the app. Assign permissions from the catalog. Do not add users or roles in the Auth0 dashboard.
 5. After `GET /api/auth/me` shows the admin user, remove `BOOTSTRAP_ADMIN_PASSWORD` from the environment and restart. Leave the email unset as well, or leave both. The admin already exists, so later boots will not reset the password.
 
 A role change is saved in the database and applies on the next request. The person does not have to sign in again.

@@ -2,7 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import type { Env } from "../config/env.js";
 import type { Database } from "./types.js";
 import { permissions, rolePermissions, roles, userRoles, users } from "./schema/index.js";
-import { ADMIN_ROLE, SEEDED_PERMISSIONS } from "../auth/catalog.js";
+import { ADMIN_ROLE, LEGACY_PERMISSIONS, SEEDED_PERMISSIONS } from "../auth/catalog.js";
 import { hasEnabledManager } from "../auth/access.js";
 import { Auth0RequestError } from "../auth/management.js";
 import type { Services } from "../services.js";
@@ -13,16 +13,17 @@ export async function ensureAccess(env: Env, services: Services) {
     .insert(permissions)
     .values(SEEDED_PERMISSIONS.map((permission) => ({ ...permission })))
     .onConflictDoNothing({ target: permissions.name });
+  await replaceLegacyPermissions(db);
+
+  const adminRoleId = await ensureAdminRole(db);
 
   if (await hasEnabledManager(db)) {
     return;
   }
 
-  const adminRoleId = await ensureAdminRole(db);
-
   if (!env.BOOTSTRAP_ADMIN_EMAIL || !env.BOOTSTRAP_ADMIN_PASSWORD) {
     console.warn(
-      "No enabled user can manage users. Set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD to create the first admin.",
+      "No enabled user can edit users and roles. Set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD to create the first admin.",
     );
     return;
   }
@@ -93,6 +94,46 @@ async function ensureAdminRole(db: Database) {
     .onConflictDoNothing();
 
   return adminRoleId;
+}
+
+async function replaceLegacyPermissions(db: Database) {
+  const legacyNames = Object.keys(LEGACY_PERMISSIONS);
+  const legacyRows = await db
+    .select({ id: permissions.id, name: permissions.name })
+    .from(permissions)
+    .where(inArray(permissions.name, legacyNames));
+
+  if (legacyRows.length === 0) {
+    return;
+  }
+
+  const replacementNames = [...new Set(Object.values(LEGACY_PERMISSIONS).flat())];
+  const replacementRows = await db
+    .select({ id: permissions.id, name: permissions.name })
+    .from(permissions)
+    .where(inArray(permissions.name, replacementNames));
+  const replacementIds = new Map(replacementRows.map((permission) => [permission.name, permission.id]));
+
+  for (const legacy of legacyRows) {
+    const links = await db
+      .select({ roleId: rolePermissions.roleId })
+      .from(rolePermissions)
+      .where(eq(rolePermissions.permissionId, legacy.id));
+    const nextNames = LEGACY_PERMISSIONS[legacy.name] ?? [];
+
+    for (const link of links) {
+      const values = nextNames.flatMap((name) => {
+        const permissionId = replacementIds.get(name);
+        return permissionId ? [{ roleId: link.roleId, permissionId }] : [];
+      });
+
+      if (values.length > 0) {
+        await db.insert(rolePermissions).values(values).onConflictDoNothing();
+      }
+    }
+
+    await db.delete(permissions).where(eq(permissions.id, legacy.id));
+  }
 }
 
 async function findOrCreateLogin(services: Services, email: string, password: string) {

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { assertManagersRemain, permissionNamesForIds } from "../auth/access.js";
-import { ADMIN_ROLE, ROLES_MANAGE, USERS_MANAGE } from "../auth/catalog.js";
+import { ADMIN_ROLE, ROLES_CREATE, ROLES_DELETE, ROLES_EDIT, ROLES_VIEW, USERS_CREATE, USERS_EDIT } from "../auth/catalog.js";
 import { requireAnyPermission, requirePermission } from "../auth/middleware.js";
 import { permissions, rolePermissions, roles } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
@@ -30,11 +30,11 @@ const updateRoleSchema = z
 
 export const roleRoutes = new Hono<AppEnv>();
 
-roleRoutes.get("/roles", requireAnyPermission(USERS_MANAGE, ROLES_MANAGE), async (c) => {
+roleRoutes.get("/roles", requireAnyPermission(ROLES_VIEW, USERS_CREATE, USERS_EDIT), async (c) => {
   return c.json({ roles: await listRoles(c.get("services").db) });
 });
 
-roleRoutes.post("/roles", requirePermission(ROLES_MANAGE), async (c) => {
+roleRoutes.post("/roles", requirePermission(ROLES_CREATE), async (c) => {
   const parsed = createRoleSchema.safeParse(await readBody(c));
 
   if (!parsed.success) {
@@ -69,7 +69,7 @@ roleRoutes.post("/roles", requirePermission(ROLES_MANAGE), async (c) => {
   }
 });
 
-roleRoutes.get("/roles/:id", requireAnyPermission(USERS_MANAGE, ROLES_MANAGE), async (c) => {
+roleRoutes.get("/roles/:id", requireAnyPermission(ROLES_VIEW, USERS_CREATE, USERS_EDIT), async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
@@ -85,7 +85,7 @@ roleRoutes.get("/roles/:id", requireAnyPermission(USERS_MANAGE, ROLES_MANAGE), a
   return c.json({ role });
 });
 
-roleRoutes.patch("/roles/:id", requirePermission(ROLES_MANAGE), async (c) => {
+roleRoutes.patch("/roles/:id", requirePermission(ROLES_EDIT), async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
@@ -138,7 +138,7 @@ roleRoutes.patch("/roles/:id", requirePermission(ROLES_MANAGE), async (c) => {
   }
 });
 
-roleRoutes.delete("/roles/:id", requirePermission(ROLES_MANAGE), async (c) => {
+roleRoutes.delete("/roles/:id", requirePermission(ROLES_DELETE), async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {

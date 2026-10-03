@@ -1,7 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import type { Database } from "../db/types.js";
 import { permissions, rolePermissions, roles, userRoles, users } from "../db/schema/index.js";
-import { USERS_MANAGE } from "./catalog.js";
+import { ROLES_EDIT, USERS_EDIT } from "./catalog.js";
 
 export type RoleSummary = {
   id: string;
@@ -97,7 +97,7 @@ export async function assertManagersRemain(db: Database, changes: AssignmentChan
   }
 
   if (countManagers(assignment) === 0) {
-    throw new AccessError("At least one enabled user must be able to manage users.");
+    throw new AccessError("At least one enabled user must be able to edit users and roles.");
   }
 }
 
@@ -199,7 +199,7 @@ function countManagers(assignment: Assignment) {
       }
     }
 
-    if (names.has(USERS_MANAGE)) {
+    if (names.has(USERS_EDIT) && names.has(ROLES_EDIT)) {
       count += 1;
     }
   }

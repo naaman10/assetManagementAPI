@@ -7,7 +7,7 @@ import {
   loadUserAccess,
   replaceUserRoles,
 } from "../auth/access.js";
-import { USERS_MANAGE } from "../auth/catalog.js";
+import { USERS_CREATE, USERS_DELETE, USERS_EDIT, USERS_VIEW } from "../auth/catalog.js";
 import { Auth0RequestError } from "../auth/management.js";
 import { requirePermission } from "../auth/middleware.js";
 import { permissions, rolePermissions, roles, sessions, userRoles, users } from "../db/schema/index.js";
@@ -36,14 +36,11 @@ const updateUserSchema = z
 
 export const userRoutes = new Hono<AppEnv>();
 
-userRoutes.use("/users", requirePermission(USERS_MANAGE));
-userRoutes.use("/users/*", requirePermission(USERS_MANAGE));
-
-userRoutes.get("/users", async (c) => {
+userRoutes.get("/users", requirePermission(USERS_VIEW), async (c) => {
   return c.json({ users: await listUsers(c.get("services").db) });
 });
 
-userRoutes.post("/users", async (c) => {
+userRoutes.post("/users", requirePermission(USERS_CREATE), async (c) => {
   const parsed = createUserSchema.safeParse(await readBody(c));
 
   if (!parsed.success) {
@@ -98,7 +95,7 @@ userRoutes.post("/users", async (c) => {
   }
 });
 
-userRoutes.get("/users/:id", async (c) => {
+userRoutes.get("/users/:id", requirePermission(USERS_VIEW), async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
@@ -114,7 +111,7 @@ userRoutes.get("/users/:id", async (c) => {
   return c.json({ user: presentUser(user, await loadUserAccess(c.get("services").db, user.id)) });
 });
 
-userRoutes.patch("/users/:id", async (c) => {
+userRoutes.patch("/users/:id", requirePermission(USERS_EDIT), async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
@@ -223,7 +220,7 @@ userRoutes.patch("/users/:id", async (c) => {
   }
 });
 
-userRoutes.delete("/users/:id", async (c) => {
+userRoutes.delete("/users/:id", requirePermission(USERS_DELETE), async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
