@@ -1,6 +1,7 @@
-import { CodeChallengeMethod } from "google-auth-library";
+import { eq } from "drizzle-orm";
+import type { Context } from "hono";
 import { Hono } from "hono";
-import { createGoogleAuth } from "../auth/google.js";
+import type { Auth0Identity } from "../auth/auth0.js";
 import { requireUser } from "../auth/middleware.js";
 import {
   clearOAuthTransaction,
@@ -21,35 +22,27 @@ auth.use("*", async (c, next) => {
   await next();
 });
 
-auth.get("/auth/google", async (c) => {
-  const client = createGoogleAuth(env);
+auth.get("/auth/login", (c) => {
+  const client = c.get("services").auth0;
   const state = createToken();
-  const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
+  const verifier = createToken();
 
-  if (!codeChallenge) {
-    throw new Error("Google code challenge was not created.");
-  }
+  saveOAuthTransaction(c, { state, verifier });
 
-  saveOAuthTransaction(c, { state, verifier: codeVerifier });
-
-  const url = client.generateAuthUrl({
-    access_type: "online",
-    scope: ["openid", "email", "profile"],
-    state,
-    prompt: "select_account",
-    code_challenge: codeChallenge,
-    code_challenge_method: CodeChallengeMethod.S256,
-  });
-
-  return c.redirect(url);
+  return c.redirect(
+    client.authorizationUrl({
+      state,
+      codeChallenge: client.codeChallenge(verifier),
+    }),
+  );
 });
 
-auth.get("/auth/google/callback", async (c) => {
-  const googleError = c.req.query("error");
+auth.get("/auth/callback", async (c) => {
+  const providerError = c.req.query("error");
 
-  if (googleError) {
+  if (providerError) {
     clearOAuthTransaction(c);
-    const code = googleError === "access_denied" ? "access_denied" : "auth_failed";
+    const code = providerError === "access_denied" ? "access_denied" : "auth_failed";
     return c.redirect(appHome(code));
   }
 
@@ -63,54 +56,20 @@ auth.get("/auth/google/callback", async (c) => {
   }
 
   try {
-    const client = createGoogleAuth(env);
-    const { tokens } = await client.getToken({
+    const identity = await c.get("services").auth0.exchangeCode({
       code,
       codeVerifier: transaction.verifier,
     });
+    const userId = await findEnabledUser(c, identity);
 
-    if (!tokens.id_token) {
+    if (!userId) {
       return c.redirect(appHome("auth_failed"));
     }
 
-    const ticket = await client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: env.GOOGLE_CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
-
-    if (!payload?.sub || !payload.email || payload.email_verified !== true) {
-      return c.redirect(appHome("auth_failed"));
-    }
-
-    const [user] = await c
-      .get("services")
-      .db.insert(users)
-      .values({
-        googleSub: payload.sub,
-        email: payload.email,
-        name: payload.name ?? null,
-        picture: payload.picture ?? null,
-      })
-      .onConflictDoUpdate({
-        target: users.googleSub,
-        set: {
-          email: payload.email,
-          name: payload.name ?? null,
-          picture: payload.picture ?? null,
-          updatedAt: new Date(),
-        },
-      })
-      .returning({ id: users.id });
-
-    if (!user) {
-      return c.redirect(appHome("auth_failed"));
-    }
-
-    await createSession(c, user.id);
+    await createSession(c, userId);
     return c.redirect(appHome());
   } catch (error) {
-    console.error("Google sign-in failed", error);
+    console.error("Auth0 sign-in failed", error);
     return c.redirect(appHome("auth_failed"));
   }
 });
@@ -121,8 +80,27 @@ auth.get("/auth/me", requireUser, (c) => {
 
 auth.post("/auth/logout", async (c) => {
   await destroySession(c);
-  return c.json({ ok: true });
+
+  return c.json({
+    ok: true,
+    logoutUrl: c.get("services").auth0.logoutUrl(env.WEB_APP_ORIGIN),
+  });
 });
+
+async function findEnabledUser(c: Context<AppEnv>, identity: Auth0Identity) {
+  const [user] = await c
+    .get("services")
+    .db.select({ id: users.id, disabled: users.disabled })
+    .from(users)
+    .where(eq(users.auth0Sub, identity.sub))
+    .limit(1);
+
+  if (!user || user.disabled) {
+    return null;
+  }
+
+  return user.id;
+}
 
 function appHome(authError?: string) {
   const url = new URL(env.WEB_APP_ORIGIN);

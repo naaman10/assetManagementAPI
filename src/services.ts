@@ -1,4 +1,5 @@
-import { createGoogleAuth } from "./auth/google.js";
+import { createAuth0 } from "./auth/auth0.js";
+import { createAuth0Management } from "./auth/management.js";
 import type { Env } from "./config/env.js";
 import { createDatabase } from "./db/client.js";
 import { createEmailClient } from "./email/resend.js";
@@ -9,8 +10,9 @@ export function createServices(env: Env) {
   return {
     db: database.db,
     pool: database.pool,
-    googleAuth: createGoogleAuth(env),
     email: createEmailClient(env),
+    auth0: createAuth0(env),
+    auth0Management: createAuth0Management(env),
   };
 }
 

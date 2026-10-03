@@ -14,11 +14,21 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: GOOGLE_CLIENT_ID
+      - key: AUTH0_DOMAIN
         sync: false
-      - key: GOOGLE_CLIENT_SECRET
+      - key: AUTH0_CLIENT_ID
         sync: false
-      - key: GOOGLE_REDIRECT_URI
+      - key: AUTH0_CLIENT_SECRET
+        sync: false
+      - key: AUTH0_REDIRECT_URI
+        sync: false
+      - key: AUTH0_MGMT_CLIENT_ID
+        sync: false
+      - key: AUTH0_MGMT_CLIENT_SECRET
+        sync: false
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
         sync: false
       - key: RESEND_API_KEY
         sync: false

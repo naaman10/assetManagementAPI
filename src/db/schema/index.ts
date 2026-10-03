@@ -1,2 +1,6 @@
+export { permissions } from "./permissions.js";
+export { rolePermissions } from "./rolePermissions.js";
+export { roles } from "./roles.js";
 export { sessions } from "./sessions.js";
+export { userRoles } from "./userRoles.js";
 export { users } from "./users.js";

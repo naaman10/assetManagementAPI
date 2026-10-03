@@ -1,11 +1,12 @@
-import { pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
-  googleSub: text("google_sub").notNull().unique(),
-  email: text("email").notNull(),
+  auth0Sub: text("auth0_sub").unique(),
+  email: text("email").notNull().unique(),
   name: text("name"),
   picture: text("picture"),
+  disabled: boolean("disabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
     .notNull()
     .defaultNow(),
