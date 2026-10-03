@@ -11,11 +11,11 @@ ALTER TABLE "users" DROP COLUMN IF EXISTS "google_sub";
 DO $$ BEGIN
 	ALTER TABLE "users" ADD CONSTRAINT "users_auth0_sub_unique" UNIQUE("auth0_sub");
 EXCEPTION
-	WHEN duplicate_object THEN NULL;
+	WHEN duplicate_object OR duplicate_table THEN NULL;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
 	ALTER TABLE "users" ADD CONSTRAINT "users_email_unique" UNIQUE("email");
 EXCEPTION
-	WHEN duplicate_object THEN NULL;
+	WHEN duplicate_object OR duplicate_table THEN NULL;
 END $$;

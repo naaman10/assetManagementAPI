@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS "users" (
 DO $$ BEGIN
 	ALTER TABLE "sessions" ADD CONSTRAINT "sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
-	WHEN duplicate_object THEN NULL;
+	WHEN duplicate_object OR duplicate_table THEN NULL;
 END $$;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "sessions_user_id_idx" ON "sessions" USING btree ("user_id");
