@@ -1,6 +1,7 @@
 import { and, asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
+import { clientIsVisible } from "../auth/clientAccess.js";
 import { CLIENTS_CREATE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
 import { clientContacts, clients, sites } from "../db/schema/index.js";
@@ -100,7 +101,7 @@ siteRoutes.post("/clients/:id/sites", requirePermission(CLIENTS_CREATE), async (
   const db = c.get("services").db;
   const [client] = await db.select({ id: clients.id }).from(clients).where(eq(clients.id, clientId)).limit(1);
 
-  if (!client) {
+  if (!client || !(await clientIsVisible(db, c.get("user"), clientId))) {
     return c.json({ error: "Client not found." }, 404);
   }
 
@@ -145,7 +146,12 @@ siteRoutes.get("/sites/:id", requirePermission(CLIENTS_VIEW), async (c) => {
     return c.json({ error: "Site not found." }, 404);
   }
 
-  const site = await loadSite(c.get("services").db, id, c.get("services").assets);
+  const db = c.get("services").db;
+  const [current] = await db.select({ clientId: sites.clientId }).from(sites).where(eq(sites.id, id)).limit(1);
+  const site =
+    current && (await clientIsVisible(db, c.get("user"), current.clientId))
+      ? await loadSite(db, id, c.get("services").assets)
+      : null;
 
   if (!site) {
     return c.json({ error: "Site not found." }, 404);
@@ -170,7 +176,7 @@ siteRoutes.patch("/sites/:id", requirePermission(CLIENTS_EDIT), async (c) => {
   const db = c.get("services").db;
   const [current] = await db.select().from(sites).where(eq(sites.id, id)).limit(1);
 
-  if (!current) {
+  if (!current || !(await clientIsVisible(db, c.get("user"), current.clientId))) {
     return c.json({ error: "Site not found." }, 404);
   }
 

@@ -1,13 +1,15 @@
 import { asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
+import { clientIsVisible, clientVisibility, isAdmin } from "../auth/clientAccess.js";
 import { CLIENTS_CREATE, CLIENTS_DELETE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { clientContacts, clients, sites } from "../db/schema/index.js";
+import { clientContacts, clientMembers, clientSettings, clients, sites } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, normalizeEmail, readBody, routeError } from "./http.js";
+import { loadClientSettings, saveClientSettings, updateSettingsSchema } from "./clientSettings.js";
 import { sitesForClient } from "./sites.js";
 
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
@@ -65,7 +67,7 @@ export const clientRoutes = new Hono<AppEnv>();
 
 clientRoutes.get("/clients", requirePermission(CLIENTS_VIEW), async (c) => {
   const db = c.get("services").db;
-  const rows = await db.select().from(clients).orderBy(asc(clients.name));
+  const rows = await db.select().from(clients).where(clientVisibility(db, c.get("user"))).orderBy(asc(clients.name));
   const contacts = await listContacts(db);
   const presented = await Promise.all(
     rows.map((client) => presentClient(c.get("services").assets, client, contacts.get(client.id) ?? [])),
@@ -106,6 +108,12 @@ clientRoutes.post("/clients", requirePermission(CLIENTS_CREATE), async (c) => {
         await tx.insert(clientContacts).values(parsed.data.contacts.map((contact) => contactValues(client.id, contact)));
       }
 
+      await tx.insert(clientSettings).values({ clientId: client.id });
+
+      if (!isAdmin(c.get("user"))) {
+        await tx.insert(clientMembers).values({ clientId: client.id, userId: c.get("user").id });
+      }
+
       return client;
     });
 
@@ -122,7 +130,13 @@ clientRoutes.get("/clients/:id", requirePermission(CLIENTS_VIEW), async (c) => {
     return c.json({ error: "Client not found." }, 404);
   }
 
-  const client = await loadClient(c.get("services").db, c.get("services").assets, id);
+  const db = c.get("services").db;
+
+  if (!(await clientIsVisible(db, c.get("user"), id))) {
+    return c.json({ error: "Client not found." }, 404);
+  }
+
+  const client = await loadClient(db, c.get("services").assets, id);
 
   if (!client) {
     return c.json({ error: "Client not found." }, 404);
@@ -147,7 +161,7 @@ clientRoutes.patch("/clients/:id", requirePermission(CLIENTS_EDIT), async (c) =>
   const db = c.get("services").db;
   const [current] = await db.select().from(clients).where(eq(clients.id, id)).limit(1);
 
-  if (!current) {
+  if (!current || !(await clientIsVisible(db, c.get("user"), id))) {
     return c.json({ error: "Client not found." }, 404);
   }
 
@@ -180,7 +194,7 @@ clientRoutes.put("/clients/:id/logo", requirePermission(CLIENTS_EDIT), async (c)
   const db = c.get("services").db;
   const [current] = await db.select().from(clients).where(eq(clients.id, id)).limit(1);
 
-  if (!current) {
+  if (!current || !(await clientIsVisible(db, c.get("user"), id))) {
     return c.json({ error: "Client not found." }, 404);
   }
 
@@ -236,7 +250,7 @@ clientRoutes.delete("/clients/:id", requirePermission(CLIENTS_DELETE), async (c)
   const db = c.get("services").db;
   const [current] = await db.select().from(clients).where(eq(clients.id, id)).limit(1);
 
-  if (!current) {
+  if (!current || !(await clientIsVisible(db, c.get("user"), id))) {
     return c.json({ error: "Client not found." }, 404);
   }
 
@@ -255,6 +269,39 @@ clientRoutes.delete("/clients/:id", requirePermission(CLIENTS_DELETE), async (c)
   }
 });
 
+clientRoutes.patch("/clients/:id/settings", requirePermission(CLIENTS_EDIT), async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Client not found." }, 404);
+  }
+
+  const parsed = updateSettingsSchema.safeParse(await readBody(c));
+
+  if (!parsed.success) {
+    return invalidRequest(c, parsed.error);
+  }
+
+  const db = c.get("services").db;
+  const [client] = await db.select({ id: clients.id }).from(clients).where(eq(clients.id, id)).limit(1);
+
+  if (!client || !(await clientIsVisible(db, c.get("user"), id))) {
+    return c.json({ error: "Client not found." }, 404);
+  }
+
+  const saved = await saveClientSettings(db, id, parsed.data);
+
+  if (saved === "contact") {
+    return c.json({ error: "Contact not found." }, 404);
+  }
+
+  if (saved === "user") {
+    return c.json({ error: "User not found." }, 404);
+  }
+
+  return c.json({ client: await loadClient(db, c.get("services").assets, id) });
+});
+
 clientRoutes.post("/clients/:id/contacts", requirePermission(CLIENTS_EDIT), async (c) => {
   const id = parseId(c.req.param("id"));
 
@@ -271,7 +318,7 @@ clientRoutes.post("/clients/:id/contacts", requirePermission(CLIENTS_EDIT), asyn
   const db = c.get("services").db;
   const [client] = await db.select({ id: clients.id }).from(clients).where(eq(clients.id, id)).limit(1);
 
-  if (!client) {
+  if (!client || !(await clientIsVisible(db, c.get("user"), id))) {
     return c.json({ error: "Client not found." }, 404);
   }
 
@@ -300,7 +347,7 @@ clientRoutes.patch("/clients/:id/contacts/:contactId", requirePermission(CLIENTS
     .where(eq(clientContacts.id, contactId))
     .limit(1);
 
-  if (!current || current.clientId !== id) {
+  if (!current || current.clientId !== id || !(await clientIsVisible(db, c.get("user"), id))) {
     return c.json({ error: "Contact not found." }, 404);
   }
 
@@ -329,7 +376,7 @@ clientRoutes.delete("/clients/:id/contacts/:contactId", requirePermission(CLIENT
   const db = c.get("services").db;
   const [current] = await db.select().from(clientContacts).where(eq(clientContacts.id, contactId)).limit(1);
 
-  if (!current || current.clientId !== id) {
+  if (!current || current.clientId !== id || !(await clientIsVisible(db, c.get("user"), id))) {
     return c.json({ error: "Contact not found." }, 404);
   }
 
@@ -399,8 +446,9 @@ async function loadClient(db: Database, storage: AssetStorage, id: string) {
     .where(eq(clientContacts.clientId, id))
     .orderBy(asc(clientContacts.name));
   const clientSites = await sitesForClient(db, id);
+  const settings = await loadClientSettings(db, id);
 
-  return presentClient(storage, client, contacts, clientSites);
+  return presentClient(storage, client, contacts, clientSites, settings);
 }
 
 async function presentClient(
@@ -408,6 +456,7 @@ async function presentClient(
   client: typeof clients.$inferSelect,
   contacts: (typeof clientContacts.$inferSelect)[],
   clientSites?: Awaited<ReturnType<typeof sitesForClient>>,
+  settings?: Awaited<ReturnType<typeof loadClientSettings>>,
 ) {
   return {
     id: client.id,
@@ -431,6 +480,7 @@ async function presentClient(
       updatedAt: contact.updatedAt,
     })),
     ...(clientSites !== undefined ? { sites: clientSites } : {}),
+    ...(settings !== undefined ? { settings } : {}),
     createdAt: client.createdAt,
     updatedAt: client.updatedAt,
   };
