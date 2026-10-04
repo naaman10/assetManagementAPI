@@ -36,6 +36,7 @@ src/
   routes/roles.ts        role management
   routes/permissions.ts  permission catalog
   routes/clients.ts      clients, contacts, and logos
+  routes/sites.ts        client sites
   storage/assets.ts      Neon assets bucket
 ```
 
@@ -128,7 +129,7 @@ A user response is `{ "id", "email", "name", "picture", "disabled", "roles", "pe
 
 ## Clients
 
-These routes require the session cookie. Contacts use the parent client's permission. There is no separate contact permission. The `admin` role receives `clients:view`, `clients:create`, `clients:edit`, and `clients:delete` on the next boot.
+These routes require the session cookie. Contacts and sites use the parent client's permission. There is no separate contact or site permission. The `admin` role receives `clients:view`, `clients:create`, `clients:edit`, and `clients:delete` on the next boot.
 
 | Action | Request | Permission |
 | --- | --- | --- |
@@ -141,12 +142,17 @@ These routes require the session cookie. Contacts use the parent client's permis
 | Add contact | `POST /clients/:id/contacts` | `clients:edit` |
 | Update contact | `PATCH /clients/:id/contacts/:contactId` | `clients:edit` |
 | Delete contact | `DELETE /clients/:id/contacts/:contactId` | `clients:edit` |
+| Create site | `POST /clients/:id/sites` | `clients:create` |
+| Read site | `GET /sites/:id` | `clients:view` |
+| Update site | `PATCH /sites/:id` | `clients:edit` |
 
 Create a client with `{ "name", "address", "contacts" }`. `contacts` is optional. `address` is `{ "line1", "line2", "city", "county", "postcode", "country" }`. `line1`, `city`, `postcode`, and `country` are required. A contact is `{ "name", "role", "email", "telephone" }`. `role` is a job title. `role`, `email`, and `telephone` are optional. Update a client with any of `{ "name", "address" }`. An address update may send only the fields that changed. Contacts are added, updated, and deleted on their own routes.
 
-A client response is `{ "id", "name", "logoUrl", "address", "contacts", "createdAt", "updatedAt" }`. `logoUrl` is a presigned read URL that lasts one hour, or `null`. The stored object key is not returned. Each contact includes `id`, `name`, `role`, `email`, `telephone`, `createdAt`, and `updatedAt`. Create client and add contact return `201`. Delete client and delete contact return `{ "ok": true }`. An unknown client or contact returns `404`.
+A client response is `{ "id", "name", "logoUrl", "address", "contacts", "createdAt", "updatedAt" }`. `GET /clients` omits `sites`. A single client, including create, update, logo, and contact responses, also includes `sites`. `logoUrl` is a presigned read URL that lasts one hour, or `null`. The stored object key is not returned. Each contact includes `id`, `name`, `role`, `email`, `telephone`, `createdAt`, and `updatedAt`. Create client and add contact return `201`. Delete client and delete contact return `{ "ok": true }`. An unknown client or contact returns `404`. Deleting a contact that is assigned to a site returns `409`.
 
-Upload a logo as multipart form data with one field named `logo`. The file must be a JPEG, PNG, or WebP image of 2 MB or less. The API stores it in the private Neon `assets` bucket and replaces any previous logo. Deleting a client deletes its logo and its contacts.
+Create a site with `{ "name", "address", "contactId" }`. `contactId` must be a contact on that client. Update a site with any of `{ "name", "address", "contactId" }`. A site response is `{ "id", "name", "address", "contact", "createdAt", "updatedAt" }`. The contact is `{ "id", "name", "role", "email", "telephone" }`. `GET /sites/:id` and `PATCH /sites/:id` also include `client` as `{ "id", "name", "logoUrl" }`. Each site on a client omits `client`. Sites are ordered by name. Create site returns `201`. An unknown site, or a contact that is missing or belongs to another client, returns `404`.
+
+Upload a logo as multipart form data with one field named `logo`. The file must be a JPEG, PNG, or WebP image of 2 MB or less. The API stores it in the private Neon `assets` bucket and replaces any previous logo. Deleting a client deletes its logo, its contacts, and its sites.
 
 ## Auth0 setup
 

@@ -4,6 +4,7 @@ import { logger } from "hono/logger";
 import { env } from "./config/env.js";
 import { auth } from "./routes/auth.js";
 import { clientRoutes } from "./routes/clients.js";
+import { siteRoutes } from "./routes/sites.js";
 import { health } from "./routes/health.js";
 import { permissionRoutes } from "./routes/permissions.js";
 import { roleRoutes } from "./routes/roles.js";
@@ -31,6 +32,7 @@ export function createApp(services: Services) {
   app.route("/", auth);
   app.route("/", userRoutes);
   app.route("/", clientRoutes);
+  app.route("/", siteRoutes);
   app.route("/", roleRoutes);
   app.route("/", permissionRoutes);
 

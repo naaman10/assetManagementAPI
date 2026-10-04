@@ -3,11 +3,12 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { CLIENTS_CREATE, CLIENTS_DELETE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { clientContacts, clients } from "../db/schema/index.js";
+import { clientContacts, clients, sites } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, normalizeEmail, readBody, routeError } from "./http.js";
+import { sitesForClient } from "./sites.js";
 
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
@@ -244,7 +245,10 @@ clientRoutes.delete("/clients/:id", requirePermission(CLIENTS_DELETE), async (c)
       await c.get("services").assets.deleteObject(current.logoKey);
     }
 
-    await db.delete(clients).where(eq(clients.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(sites).where(eq(sites.clientId, id));
+      await tx.delete(clients).where(eq(clients.id, id));
+    });
     return c.json({ ok: true });
   } catch (error) {
     return routeError(c, error);
@@ -329,7 +333,16 @@ clientRoutes.delete("/clients/:id/contacts/:contactId", requirePermission(CLIENT
     return c.json({ error: "Contact not found." }, 404);
   }
 
-  await db.delete(clientContacts).where(eq(clientContacts.id, contactId));
+  try {
+    await db.delete(clientContacts).where(eq(clientContacts.id, contactId));
+  } catch (error) {
+    if (isForeignKeyViolation(error)) {
+      return c.json({ error: "This contact is assigned to a site." }, 409);
+    }
+
+    throw error;
+  }
+
   return c.json({ ok: true });
 });
 
@@ -385,14 +398,16 @@ async function loadClient(db: Database, storage: AssetStorage, id: string) {
     .from(clientContacts)
     .where(eq(clientContacts.clientId, id))
     .orderBy(asc(clientContacts.name));
+  const clientSites = await sitesForClient(db, id);
 
-  return presentClient(storage, client, contacts);
+  return presentClient(storage, client, contacts, clientSites);
 }
 
 async function presentClient(
   storage: AssetStorage,
   client: typeof clients.$inferSelect,
   contacts: (typeof clientContacts.$inferSelect)[],
+  clientSites?: Awaited<ReturnType<typeof sitesForClient>>,
 ) {
   return {
     id: client.id,
@@ -415,9 +430,26 @@ async function presentClient(
       createdAt: contact.createdAt,
       updatedAt: contact.updatedAt,
     })),
+    ...(clientSites !== undefined ? { sites: clientSites } : {}),
     createdAt: client.createdAt,
     updatedAt: client.updatedAt,
   };
+}
+
+function isForeignKeyViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  if ("code" in error && error.code === "23503") {
+    return true;
+  }
+
+  if ("cause" in error) {
+    return isForeignKeyViolation(error.cause);
+  }
+
+  return false;
 }
 
 function imageType(bytes: Uint8Array) {

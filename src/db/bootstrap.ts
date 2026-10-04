@@ -2,7 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import type { Env } from "../config/env.js";
 import type { Database } from "./types.js";
 import { permissions, rolePermissions, roles, userRoles, users } from "./schema/index.js";
-import { ADMIN_ROLE, LEGACY_PERMISSIONS, SEEDED_PERMISSIONS } from "../auth/catalog.js";
+import { ADMIN_ROLE, CLIENTS_CREATE, CLIENTS_EDIT, CLIENTS_VIEW, LEGACY_PERMISSIONS, SEEDED_PERMISSIONS } from "../auth/catalog.js";
 import { hasEnabledManager } from "../auth/access.js";
 import { Auth0RequestError } from "../auth/management.js";
 import type { Services } from "../services.js";
@@ -13,6 +13,15 @@ export async function ensureAccess(env: Env, services: Services) {
     .insert(permissions)
     .values(SEEDED_PERMISSIONS.map((permission) => ({ ...permission })))
     .onConflictDoNothing({ target: permissions.name });
+
+  for (const name of [CLIENTS_VIEW, CLIENTS_CREATE, CLIENTS_EDIT]) {
+    const permission = SEEDED_PERMISSIONS.find((item) => item.name === name);
+
+    if (permission) {
+      await db.update(permissions).set({ description: permission.description }).where(eq(permissions.name, name));
+    }
+  }
+
   await replaceLegacyPermissions(db);
 
   const adminRoleId = await ensureAdminRole(db);
