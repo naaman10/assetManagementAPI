@@ -13,6 +13,7 @@ export const sites = pgTable(
       .notNull()
       .references(() => clientContacts.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
+    reference: text("reference"),
     addressLine1: text("address_line1").notNull(),
     addressLine2: text("address_line2"),
     city: text("city").notNull(),

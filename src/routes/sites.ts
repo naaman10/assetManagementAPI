@@ -31,8 +31,11 @@ const addressPatchSchema = z.object({
   country: z.string().trim().min(1).max(120).optional(),
 });
 
+const optionalReference = z.string().trim().max(200).nullable().optional();
+
 const createSiteSchema = z.object({
   name: z.string().trim().min(1).max(200),
+  reference: optionalReference,
   address: addressSchema,
   contactId: z.uuid(),
 });
@@ -40,16 +43,25 @@ const createSiteSchema = z.object({
 const updateSiteSchema = z
   .object({
     name: z.string().trim().min(1).max(200).optional(),
+    reference: optionalReference,
     address: addressPatchSchema.optional(),
     contactId: z.uuid().optional(),
   })
-  .refine((value) => value.name !== undefined || value.address !== undefined || value.contactId !== undefined, {
-    message: "No changes were provided.",
-  });
+  .refine(
+    (value) =>
+      value.name !== undefined ||
+      value.reference !== undefined ||
+      value.address !== undefined ||
+      value.contactId !== undefined,
+    {
+      message: "No changes were provided.",
+    },
+  );
 
 const siteColumns = {
   id: sites.id,
   name: sites.name,
+  reference: sites.reference,
   addressLine1: sites.addressLine1,
   addressLine2: sites.addressLine2,
   city: sites.city,
@@ -68,6 +80,7 @@ const siteColumns = {
 type SiteRow = {
   id: string;
   name: string;
+  reference: string | null;
   addressLine1: string;
   addressLine2: string | null;
   city: string;
@@ -120,6 +133,7 @@ siteRoutes.post("/clients/:id/sites", requirePermission(CLIENTS_CREATE), async (
         clientId,
         contactId: parsed.data.contactId,
         name: parsed.data.name,
+        reference: blankToNull(parsed.data.reference),
         addressLine1: address.line1,
         addressLine2: blankToNull(address.line2),
         city: address.city,
@@ -194,6 +208,7 @@ siteRoutes.patch("/sites/:id", requirePermission(CLIENTS_EDIT), async (c) => {
     .update(sites)
     .set({
       name: parsed.data.name ?? current.name,
+      reference: parsed.data.reference === undefined ? current.reference : blankToNull(parsed.data.reference),
       contactId: parsed.data.contactId ?? current.contactId,
       addressLine1: address?.line1 ?? current.addressLine1,
       addressLine2: address?.line2 === undefined ? current.addressLine2 : blankToNull(address.line2),
@@ -235,6 +250,7 @@ async function loadSite(db: Database, id: string, storage?: AssetStorage) {
       ...siteColumns,
       clientId: clients.id,
       clientName: clients.name,
+      clientReference: clients.reference,
       logoKey: clients.logoKey,
     })
     .from(sites)
@@ -256,11 +272,13 @@ async function loadSite(db: Database, id: string, storage?: AssetStorage) {
   return {
     id: site.id,
     name: site.name,
+    reference: site.reference,
     address: site.address,
     contact: site.contact,
     client: {
       id: row.clientId,
       name: row.clientName,
+      reference: row.clientReference,
       logoUrl: await storage.logoUrl(row.logoKey),
     },
     createdAt: site.createdAt,
@@ -272,6 +290,7 @@ function presentSite(row: SiteRow) {
   return {
     id: row.id,
     name: row.name,
+    reference: row.reference,
     address: {
       line1: row.addressLine1,
       line2: row.addressLine2,

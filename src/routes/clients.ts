@@ -4,7 +4,7 @@ import { z } from "zod";
 import { clientIsVisible, clientVisibility, isAdmin } from "../auth/clientAccess.js";
 import { CLIENTS_CREATE, CLIENTS_DELETE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { clientContacts, clientMembers, clientSettings, clients, sites } from "../db/schema/index.js";
+import { clientContacts, clientMembers, clientSettings, clients, sites, users } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv } from "../types.js";
@@ -35,6 +35,8 @@ const addressPatchSchema = z.object({
   country: z.string().trim().min(1).max(120).optional(),
 });
 
+const optionalReference = z.string().trim().max(200).nullable().optional();
+
 const contactSchema = z.object({
   name: z.string().trim().min(1).max(200),
   role: z.string().trim().max(80).nullable().optional(),
@@ -50,6 +52,7 @@ const contactPatchSchema = contactSchema
 
 const createClientSchema = z.object({
   name: z.string().trim().min(1).max(200),
+  reference: optionalReference,
   address: addressSchema,
   contacts: z.array(contactSchema).max(50).optional().default([]),
 });
@@ -57,9 +60,10 @@ const createClientSchema = z.object({
 const updateClientSchema = z
   .object({
     name: z.string().trim().min(1).max(200).optional(),
+    reference: optionalReference,
     address: addressPatchSchema.optional(),
   })
-  .refine((value) => value.name !== undefined || value.address !== undefined, {
+  .refine((value) => value.name !== undefined || value.reference !== undefined || value.address !== undefined, {
     message: "No changes were provided.",
   });
 
@@ -73,6 +77,16 @@ clientRoutes.get("/clients", requirePermission(CLIENTS_VIEW), async (c) => {
     rows.map((client) => presentClient(c.get("services").assets, client, contacts.get(client.id) ?? [])),
   );
   return c.json({ clients: presented });
+});
+
+clientRoutes.get("/clients/users", requirePermission(CLIENTS_EDIT), async (c) => {
+  const rows = await c
+    .get("services")
+    .db.select({ id: users.id, email: users.email, name: users.name })
+    .from(users)
+    .orderBy(asc(users.name), asc(users.email));
+
+  return c.json({ users: rows });
 });
 
 clientRoutes.post("/clients", requirePermission(CLIENTS_CREATE), async (c) => {
@@ -91,6 +105,7 @@ clientRoutes.post("/clients", requirePermission(CLIENTS_CREATE), async (c) => {
         .insert(clients)
         .values({
           name: parsed.data.name,
+          reference: blankToNull(parsed.data.reference),
           addressLine1: address.line1,
           addressLine2: blankToNull(address.line2),
           city: address.city,
@@ -171,6 +186,7 @@ clientRoutes.patch("/clients/:id", requirePermission(CLIENTS_EDIT), async (c) =>
     .update(clients)
     .set({
       name: parsed.data.name ?? current.name,
+      reference: parsed.data.reference === undefined ? current.reference : blankToNull(parsed.data.reference),
       addressLine1: address?.line1 ?? current.addressLine1,
       addressLine2: address?.line2 === undefined ? current.addressLine2 : blankToNull(address.line2),
       city: address?.city ?? current.city,
@@ -461,6 +477,7 @@ async function presentClient(
   return {
     id: client.id,
     name: client.name,
+    reference: client.reference,
     logoUrl: await storage.logoUrl(client.logoKey),
     address: {
       line1: client.addressLine1,

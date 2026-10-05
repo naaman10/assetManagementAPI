@@ -23,7 +23,7 @@ export const SEEDED_PERMISSIONS = [
   { name: ROLES_EDIT, description: "Update roles and their permissions." },
   { name: ROLES_DELETE, description: "Delete roles." },
   { name: PERMISSIONS_VIEW, description: "List the permission catalog." },
-  { name: CLIENTS_VIEW, description: "List and read clients the user can access, including their contacts and sites." },
+  { name: CLIENTS_VIEW, description: "List and read clients the user can access, including their contacts, sites, and settings." },
   { name: CLIENTS_CREATE, description: "Create clients and sites." },
   { name: CLIENTS_EDIT, description: "Update clients, logos, contacts, sites, and settings." },
   { name: CLIENTS_DELETE, description: "Delete clients." },

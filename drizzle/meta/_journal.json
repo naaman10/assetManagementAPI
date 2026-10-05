@@ -43,6 +43,13 @@
       "when": 1791117568280,
       "tag": "0005_gigantic_blue_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791187828169,
+      "tag": "0006_silky_gunslinger",
+      "breakpoints": true
     }
   ]
 }
