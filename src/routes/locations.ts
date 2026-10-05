@@ -2,8 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
-import { CLIENTS_CREATE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
-import { requirePermission } from "../auth/middleware.js";
+import { requireUser } from "../auth/middleware.js";
 import { locations, sites } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
@@ -28,7 +27,25 @@ const updateLocationSchema = z
 
 export const locationRoutes = new Hono<AppEnv>();
 
-locationRoutes.post("/sites/:id/locations", requirePermission(CLIENTS_CREATE), async (c) => {
+locationRoutes.get("/sites/:id/locations", requireUser, async (c) => {
+  const siteId = parseId(c.req.param("id"));
+
+  if (!siteId) {
+    return c.json({ error: "Site not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const site = await visibleSite(db, c.get("user"), siteId);
+
+  if (!site) {
+    return c.json({ error: "Site not found." }, 404);
+  }
+
+  const rows = await locationsForSite(db, siteId);
+  return c.json({ locationCount: rows.length, locations: rows });
+});
+
+locationRoutes.post("/sites/:id/locations", requireUser, async (c) => {
   const siteId = parseId(c.req.param("id"));
 
   if (!siteId) {
@@ -64,7 +81,7 @@ locationRoutes.post("/sites/:id/locations", requirePermission(CLIENTS_CREATE), a
   return c.json({ location: presentLocation(created) }, 201);
 });
 
-locationRoutes.get("/locations/:id", requirePermission(CLIENTS_VIEW), async (c) => {
+locationRoutes.get("/locations/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
@@ -80,7 +97,7 @@ locationRoutes.get("/locations/:id", requirePermission(CLIENTS_VIEW), async (c) 
   return c.json({ location });
 });
 
-locationRoutes.patch("/locations/:id", requirePermission(CLIENTS_EDIT), async (c) => {
+locationRoutes.patch("/locations/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
@@ -110,6 +127,24 @@ locationRoutes.patch("/locations/:id", requirePermission(CLIENTS_EDIT), async (c
     .where(eq(locations.id, id));
 
   return c.json({ location: await loadLocation(db, c.get("user"), id) });
+});
+
+locationRoutes.delete("/locations/:id", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const current = await loadLocation(db, c.get("user"), id);
+
+  if (!current) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  await db.delete(locations).where(eq(locations.id, id));
+  return c.json({ ok: true });
 });
 
 export async function locationsForSite(db: Database, siteId: string) {

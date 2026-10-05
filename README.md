@@ -132,7 +132,7 @@ A user response is `{ "id", "email", "name", "picture", "disabled", "roles", "pe
 
 These routes require the session cookie. Contacts, sites, and settings use the parent client's permission. There is no separate contact, site, or settings permission. The `admin` role receives `clients:view`, `clients:create`, `clients:edit`, and `clients:delete` on the next boot.
 
-A user with the `admin` role can see every client. Any other user can see a client only as its sponsor or as one of its members. The client lead is a contact, so that link does not grant access. The same rule covers the client's contacts, sites, logo, and settings. A hidden client returns `404`, including its contacts and sites. `GET /clients` lists only the clients that user can see. Creating a client adds the creator as a member, unless the creator is an admin.
+A user with the `admin` role can see every client. Any other user can see a client only as its sponsor or as one of its members. The client lead is a contact, so that link does not grant access. The same rule covers the client's contacts, sites, logo, and settings. A sponsor, a member, or an admin can view, add, edit, and delete that client's locations without a `clients` permission. Anyone else receives `404`. A hidden client returns `404`, including its contacts and sites. `GET /clients` lists only the clients that user can see. Creating a client adds the creator as a member, unless the creator is an admin.
 
 | Action | Request | Permission |
 | --- | --- | --- |
@@ -148,9 +148,11 @@ A user with the `admin` role can see every client. Any other user can see a clie
 | Create site | `POST /clients/:id/sites` | `clients:create` |
 | Read site | `GET /sites/:id` | `clients:view` |
 | Update site | `PATCH /sites/:id` | `clients:edit` |
-| Create location | `POST /sites/:id/locations` | `clients:create` |
-| Read location | `GET /locations/:id` | `clients:view` |
-| Update location | `PATCH /locations/:id` | `clients:edit` |
+| List locations | `GET /sites/:id/locations` | Client member |
+| Create location | `POST /sites/:id/locations` | Client member |
+| Read location | `GET /locations/:id` | Client member |
+| Update location | `PATCH /locations/:id` | Client member |
+| Delete location | `DELETE /locations/:id` | Client member |
 | Update settings | `PATCH /clients/:id/settings` | `clients:edit` |
 | List users for settings | `GET /clients/users` | `clients:edit` |
 
@@ -160,7 +162,7 @@ A client response is `{ "id", "name", "reference", "logoUrl", "address", "contac
 
 Create a site with `{ "name", "reference", "address", "contactId" }`. `reference` is optional and may be null. An empty reference is stored as null. `contactId` must be a contact on that client. Update a site with any of `{ "name", "reference", "address", "contactId" }`. A site response is `{ "id", "name", "reference", "address", "contact", "locationCount", "locations", "createdAt", "updatedAt" }`. The contact is `{ "id", "name", "role", "email", "telephone" }`. `GET /sites/:id` and `PATCH /sites/:id` also include `client` as `{ "id", "name", "reference", "logoUrl" }`. Each site on a client omits `client`, `locationCount`, and `locations`. Sites are ordered by name. Create site returns `201`. An unknown site, or a contact that is missing or belongs to another client, returns `404`.
 
-`locations` is ordered by name. Each location is `{ "id", "siteId", "locationCode", "name", "createdAt", "updatedAt" }`. `locationCode` and `name` are optional and may be null. `locationCode` is at most 100 characters and `name` is at most 255. Create a location with `{ "locationCode", "name" }`. Update a location with any of those fields. Send null or an empty string to clear one. Create location returns `201`. An unknown location returns `404`. Deleting a client deletes its locations with its sites.
+`GET /sites/:id/locations` returns `{ "locationCount", "locations" }` for a sponsor, a member, or an admin. `locations` is ordered by name. Each location is `{ "id", "siteId", "locationCode", "name", "createdAt", "updatedAt" }`. `locationCode` and `name` are optional and may be null. `locationCode` is at most 100 characters and `name` is at most 255. Create a location with `{ "locationCode", "name" }`. Update a location with any of those fields. Send null or an empty string to clear one. Create location returns `201`. Delete location returns `{ "ok": true }`. An unknown location returns `404`. Deleting a client deletes its locations with its sites.
 
 Upload a logo as multipart form data with one field named `logo`. The file must be a JPEG, PNG, or WebP image of 2 MB or less. The API stores it in the private Neon `assets` bucket and replaces any previous logo. Deleting a client deletes its logo, its contacts, its sites, its locations, and its settings.
 

@@ -24,8 +24,8 @@ export const SEEDED_PERMISSIONS = [
   { name: ROLES_DELETE, description: "Delete roles." },
   { name: PERMISSIONS_VIEW, description: "List the permission catalog." },
   { name: CLIENTS_VIEW, description: "List and read clients the user can access, including their contacts, sites, locations, and settings." },
-  { name: CLIENTS_CREATE, description: "Create clients, sites, and locations." },
-  { name: CLIENTS_EDIT, description: "Update clients, logos, contacts, sites, locations, and settings." },
+  { name: CLIENTS_CREATE, description: "Create clients and sites." },
+  { name: CLIENTS_EDIT, description: "Update clients, logos, contacts, sites, and settings." },
   { name: CLIENTS_DELETE, description: "Delete clients." },
 ] as const;
 
