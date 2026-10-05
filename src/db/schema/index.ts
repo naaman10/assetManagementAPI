@@ -2,6 +2,7 @@ export { clientContacts } from "./clientContacts.js";
 export { clientMembers } from "./clientMembers.js";
 export { clientSettings } from "./clientSettings.js";
 export { clients } from "./clients.js";
+export { locations } from "./locations.js";
 export { permissions } from "./permissions.js";
 export { rolePermissions } from "./rolePermissions.js";
 export { roles } from "./roles.js";

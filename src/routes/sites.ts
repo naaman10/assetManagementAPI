@@ -9,6 +9,7 @@ import type { Database } from "../db/types.js";
 import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
+import { locationsForSite } from "./locations.js";
 
 const requiredLine = z.string().trim().min(1).max(200);
 const optionalLine = z.string().trim().max(200).nullable().optional();
@@ -264,9 +265,20 @@ async function loadSite(db: Database, id: string, storage?: AssetStorage) {
   }
 
   const site = presentSite(row);
+  const siteLocations = await locationsForSite(db, row.id);
 
   if (!storage) {
-    return site;
+    return {
+      id: site.id,
+      name: site.name,
+      reference: site.reference,
+      address: site.address,
+      contact: site.contact,
+      locationCount: siteLocations.length,
+      locations: siteLocations,
+      createdAt: site.createdAt,
+      updatedAt: site.updatedAt,
+    };
   }
 
   return {
@@ -281,6 +293,8 @@ async function loadSite(db: Database, id: string, storage?: AssetStorage) {
       reference: row.clientReference,
       logoUrl: await storage.logoUrl(row.logoKey),
     },
+    locationCount: siteLocations.length,
+    locations: siteLocations,
     createdAt: site.createdAt,
     updatedAt: site.updatedAt,
   };
