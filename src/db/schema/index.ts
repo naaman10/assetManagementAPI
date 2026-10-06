@@ -1,3 +1,4 @@
+export { assetTypes } from "./assetTypes.js";
 export { clientContacts } from "./clientContacts.js";
 export { clientMembers } from "./clientMembers.js";
 export { clientSettings } from "./clientSettings.js";

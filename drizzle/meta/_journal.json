@@ -57,6 +57,13 @@
       "when": 1791206120048,
       "tag": "0007_tired_ultimatum",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791272216252,
+      "tag": "0008_vengeful_toad_men",
+      "breakpoints": true
     }
   ]
 }

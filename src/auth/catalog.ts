@@ -11,6 +11,10 @@ export const CLIENTS_VIEW = "clients:view";
 export const CLIENTS_CREATE = "clients:create";
 export const CLIENTS_EDIT = "clients:edit";
 export const CLIENTS_DELETE = "clients:delete";
+export const ASSET_TYPES_VIEW = "assetType:view";
+export const ASSET_TYPES_CREATE = "assetType:create";
+export const ASSET_TYPES_EDIT = "assetType:edit";
+export const ASSET_TYPES_DELETE = "assetType:delete";
 export const ADMIN_ROLE = "admin";
 
 export const SEEDED_PERMISSIONS = [
@@ -27,6 +31,10 @@ export const SEEDED_PERMISSIONS = [
   { name: CLIENTS_CREATE, description: "Create clients and sites." },
   { name: CLIENTS_EDIT, description: "Update clients, logos, contacts, sites, and settings." },
   { name: CLIENTS_DELETE, description: "Delete clients." },
+  { name: ASSET_TYPES_VIEW, description: "List and read asset types." },
+  { name: ASSET_TYPES_CREATE, description: "Create asset types." },
+  { name: ASSET_TYPES_EDIT, description: "Update asset types." },
+  { name: ASSET_TYPES_DELETE, description: "Delete asset types." },
 ] as const;
 
 export const LEGACY_PERMISSIONS: Record<string, readonly string[]> = {

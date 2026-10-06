@@ -38,6 +38,7 @@ src/
   routes/clients.ts      clients, contacts, logos, and settings
   routes/sites.ts        client sites
   routes/locations.ts    site locations
+  routes/assetTypes.ts   asset type catalog
   storage/assets.ts      Neon assets bucket
 ```
 
@@ -127,6 +128,20 @@ Passwords are sent only to create or update a user. Responses never include them
 Create a user with `{ "email", "password", "name", "roleIds" }`. `name` and `roleIds` are optional. `roleIds` may contain one role or several. Update a user with any of `{ "email", "password", "name", "disabled", "roleIds" }`. `roleIds` replaces the user's roles. Create a role with `{ "name", "description", "permissionIds" }`. `permissionIds` must be ids returned by `GET /permissions`.
 
 A user response is `{ "id", "email", "name", "picture", "disabled", "roles", "permissions", "createdAt", "updatedAt" }`. A role response includes its permissions. Invalid JSON or fields return `400`. A duplicate email or role name returns `409`.
+
+## Asset types
+
+These routes require the session cookie. Asset types are shared catalog data, so access is the permission below and does not depend on client membership. The `admin` role receives `assetType:view`, `assetType:create`, `assetType:edit`, and `assetType:delete` on the next boot. The migration seeds the asset type hierarchy. Each record is `{ "id", "parentId", "code", "name", "description", "classificationType", "isActive", "createdAt", "updatedAt" }`. `parentId` and `description` may be null. `classificationType` is `group`, `system`, `element`, `asset`, or `component`. `code` is unique. `GET /asset-types` returns the full list ordered by code.
+
+| Action | Request | Permission |
+| --- | --- | --- |
+| List asset types | `GET /asset-types` | `assetType:view` |
+| Create asset type | `POST /asset-types` | `assetType:create` |
+| Read asset type | `GET /asset-types/:id` | `assetType:view` |
+| Update asset type | `PATCH /asset-types/:id` | `assetType:edit` |
+| Delete asset type | `DELETE /asset-types/:id` | `assetType:delete` |
+
+Create an asset type with `{ "code", "name", "description", "classificationType", "parentId", "isActive" }`. `code` and `name` are required. The others are optional. `classificationType` defaults to `asset` and `isActive` defaults to true. Update an asset type with any of those fields. A duplicate code returns `409`. An unknown asset type or parent returns `404`. A parent that would nest an asset type under itself returns `400`. Delete returns `{ "ok": true }`. Deleting an asset type that still has children returns `409`.
 
 ## Clients
 

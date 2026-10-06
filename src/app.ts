@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { env } from "./config/env.js";
+import { assetTypeRoutes } from "./routes/assetTypes.js";
 import { auth } from "./routes/auth.js";
 import { clientRoutes } from "./routes/clients.js";
 import { locationRoutes } from "./routes/locations.js";
@@ -35,6 +36,7 @@ export function createApp(services: Services) {
   app.route("/", clientRoutes);
   app.route("/", siteRoutes);
   app.route("/", locationRoutes);
+  app.route("/", assetTypeRoutes);
   app.route("/", roleRoutes);
   app.route("/", permissionRoutes);
 
