@@ -1,4 +1,5 @@
 export { ASSET_STATUSES, assets } from "./assets.js";
+export { AUDIT_STATUSES, auditAssets, audits } from "./audits.js";
 export { assetTypes } from "./assetTypes.js";
 export { bcisRefs, bcisSubRefs, elements, groups, subElements } from "./classifications.js";
 export { clientContacts } from "./clientContacts.js";

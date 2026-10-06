@@ -78,6 +78,13 @@
       "when": 1791280217390,
       "tag": "0010_flimsy_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791293344084,
+      "tag": "0011_square_firestar",
+      "breakpoints": true
     }
   ]
 }
