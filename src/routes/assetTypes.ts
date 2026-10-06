@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { ASSET_TYPES_CREATE, ASSET_TYPES_DELETE, ASSET_TYPES_EDIT, ASSET_TYPES_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { assetTypes } from "../db/schema/index.js";
+import { assetTypes, assets } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
@@ -158,12 +158,24 @@ assetTypeRoutes.delete("/asset-types/:id", requirePermission(ASSET_TYPES_DELETE)
     return c.json({ error: "Asset type not found." }, 404);
   }
 
+  const [child] = await db.select({ id: assetTypes.id }).from(assetTypes).where(eq(assetTypes.parentId, id)).limit(1);
+
+  if (child) {
+    return c.json({ error: "This asset type has child asset types." }, 409);
+  }
+
+  const [usedByAsset] = await db.select({ id: assets.id }).from(assets).where(eq(assets.assetTypeId, id)).limit(1);
+
+  if (usedByAsset) {
+    return c.json({ error: "This asset type is still used by assets." }, 409);
+  }
+
   try {
     await db.delete(assetTypes).where(eq(assetTypes.id, id));
     return c.json({ ok: true });
   } catch (error) {
     if (isForeignKeyViolation(error)) {
-      return c.json({ error: "This asset type has child asset types." }, 409);
+      return c.json({ error: "This asset type is still in use." }, 409);
     }
 
     throw error;

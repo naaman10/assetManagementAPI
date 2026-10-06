@@ -38,6 +38,7 @@ src/
   routes/clients.ts      clients, contacts, logos, and settings
   routes/sites.ts        client sites
   routes/locations.ts    site locations
+  routes/assets.ts       location assets
   routes/assetTypes.ts   asset type catalog
   storage/assets.ts      Neon assets bucket
 ```
@@ -141,13 +142,13 @@ These routes require the session cookie. Asset types are shared catalog data, so
 | Update asset type | `PATCH /asset-types/:id` | `assetType:edit` |
 | Delete asset type | `DELETE /asset-types/:id` | `assetType:delete` |
 
-Create an asset type with `{ "code", "name", "description", "classificationType", "parentId", "isActive" }`. `code` and `name` are required. The others are optional. `classificationType` defaults to `asset` and `isActive` defaults to true. Update an asset type with any of those fields. A duplicate code returns `409`. An unknown asset type or parent returns `404`. A parent that would nest an asset type under itself returns `400`. Delete returns `{ "ok": true }`. Deleting an asset type that still has children returns `409`.
+Create an asset type with `{ "code", "name", "description", "classificationType", "parentId", "isActive" }`. `code` and `name` are required. The others are optional. `classificationType` defaults to `asset` and `isActive` defaults to true. Update an asset type with any of those fields. A duplicate code returns `409`. An unknown asset type or parent returns `404`. A parent that would nest an asset type under itself returns `400`. Delete returns `{ "ok": true }`. Deleting an asset type that still has children, or that is still used by an asset, returns `409`.
 
 ## Clients
 
 These routes require the session cookie. Contacts, sites, and settings use the parent client's permission. There is no separate contact, site, or settings permission. The `admin` role receives `clients:view`, `clients:create`, `clients:edit`, and `clients:delete` on the next boot.
 
-A user with the `admin` role can see every client. Any other user can see a client only as its sponsor or as one of its members. The client lead is a contact, so that link does not grant access. The same rule covers the client's contacts, sites, logo, and settings. A sponsor, a member, or an admin can view, add, edit, and delete that client's locations without a `clients` permission. Anyone else receives `404`. A hidden client returns `404`, including its contacts and sites. `GET /clients` lists only the clients that user can see. Creating a client adds the creator as a member, unless the creator is an admin.
+A user with the `admin` role can see every client. Any other user can see a client only as its sponsor or as one of its members. The client lead is a contact, so that link does not grant access. The same rule covers the client's contacts, sites, logo, and settings. A sponsor, a member, or an admin can view, add, edit, and delete that client's locations and assets without a `clients` permission. Anyone else receives `404`. A hidden client returns `404`, including its contacts, sites, locations, and assets. `GET /clients` lists only the clients that user can see. Creating a client adds the creator as a member, unless the creator is an admin.
 
 | Action | Request | Permission |
 | --- | --- | --- |
@@ -168,6 +169,11 @@ A user with the `admin` role can see every client. Any other user can see a clie
 | Read location | `GET /locations/:id` | Client member |
 | Update location | `PATCH /locations/:id` | Client member |
 | Delete location | `DELETE /locations/:id` | Client member |
+| List assets | `GET /locations/:id/assets` | Client member |
+| Create asset | `POST /locations/:id/assets` | Client member |
+| Read asset | `GET /assets/:id` | Client member |
+| Update asset | `PATCH /assets/:id` | Client member |
+| Delete asset | `DELETE /assets/:id` | Client member |
 | Update settings | `PATCH /clients/:id/settings` | `clients:edit` |
 | List users for settings | `GET /clients/users` | `clients:edit` |
 
@@ -177,9 +183,11 @@ A client response is `{ "id", "name", "reference", "logoUrl", "address", "contac
 
 Create a site with `{ "name", "reference", "address", "contactId" }`. `reference` is optional and may be null. An empty reference is stored as null. `contactId` must be a contact on that client. Update a site with any of `{ "name", "reference", "address", "contactId" }`. A site response is `{ "id", "name", "reference", "address", "contact", "locationCount", "locations", "createdAt", "updatedAt" }`. The contact is `{ "id", "name", "role", "email", "telephone" }`. `GET /sites/:id` and `PATCH /sites/:id` also include `client` as `{ "id", "name", "reference", "logoUrl" }`. Each site on a client omits `client`, `locationCount`, and `locations`. Sites are ordered by name. Create site returns `201`. An unknown site, or a contact that is missing or belongs to another client, returns `404`.
 
-`GET /sites/:id/locations` returns `{ "locationCount", "locations" }` for a sponsor, a member, or an admin. `locations` is ordered by name. Each location is `{ "id", "siteId", "locationCode", "name", "createdAt", "updatedAt" }`. `locationCode` and `name` are optional and may be null. `locationCode` is at most 100 characters and `name` is at most 255. Create a location with `{ "locationCode", "name" }`. Update a location with any of those fields. Send null or an empty string to clear one. Create location returns `201`. Delete location returns `{ "ok": true }`. An unknown location returns `404`. Deleting a client deletes its locations with its sites.
+`GET /sites/:id/locations` returns `{ "locationCount", "locations" }` for a sponsor, a member, or an admin. `locations` is ordered by name. Each location is `{ "id", "siteId", "locationCode", "name", "createdAt", "updatedAt" }`. `locationCode` and `name` are optional and may be null. `locationCode` is at most 100 characters and `name` is at most 255. Create a location with `{ "locationCode", "name" }`. Update a location with any of those fields. Send null or an empty string to clear one. Create location returns `201`. Delete location returns `{ "ok": true }`. An unknown location returns `404`. Deleting a location deletes its assets. Deleting a client deletes its sites, its locations, and its assets.
 
-Upload a logo as multipart form data with one field named `logo`. The file must be a JPEG, PNG, or WebP image of 2 MB or less. The API stores it in the private Neon `assets` bucket and replaces any previous logo. Deleting a client deletes its logo, its contacts, its sites, its locations, and its settings.
+`GET /locations/:id/assets` returns `{ "assetCount", "assets" }` for a sponsor, a member, or an admin of that location's client. `assets` is ordered by reference. Each asset is `{ "id", "locationId", "assetTypeId", "assetRef", "assetName", "description", "quantity", "unitOfMeasure", "installationDate", "estimatedAgeYears", "expectedLifeYears", "status", "createdAt", "updatedAt" }`. `assetName`, `description`, `quantity`, `unitOfMeasure`, `installationDate`, `estimatedAgeYears`, and `expectedLifeYears` may be null. `assetRef` is required and is at most 100 characters. `unitOfMeasure` is at most 30 characters. `quantity` has up to 2 decimal places. `installationDate` is `YYYY-MM-DD`. `estimatedAgeYears` and `expectedLifeYears` are zero or greater. `status` is `active`, `inactive`, `out_of_service`, `decommissioned`, `disposed`, `proposed`, `under_installation`, `awaiting_commissioning`, or `deleted`, and defaults to `active`. Create an asset with `{ "assetTypeId", "assetRef", "assetName", "description", "quantity", "unitOfMeasure", "installationDate", "estimatedAgeYears", "expectedLifeYears", "status" }`. `assetTypeId` and `assetRef` are required. The location comes from the URL and cannot be changed. Update an asset with any of those fields. Send null or an empty string to clear an optional text or date field. Send null to clear quantity or a year count. Create asset returns `201`. Delete asset returns `{ "ok": true }` and removes the row. Setting `status` to `deleted` keeps the row. An unknown location, asset, or asset type returns `404`.
+
+Upload a logo as multipart form data with one field named `logo`. The file must be a JPEG, PNG, or WebP image of 2 MB or less. The API stores it in the private Neon `assets` bucket and replaces any previous logo. Deleting a client deletes its logo, its contacts, its sites, its locations, its assets, and its settings.
 
 ## Auth0 setup
 

@@ -1,3 +1,4 @@
+export { ASSET_STATUSES, assets } from "./assets.js";
 export { assetTypes } from "./assetTypes.js";
 export { clientContacts } from "./clientContacts.js";
 export { clientMembers } from "./clientMembers.js";
