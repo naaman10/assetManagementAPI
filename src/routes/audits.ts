@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import { clientIsVisible } from "../auth/clientAccess.js";
+import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { AUDIT_STATUSES, assets, auditAssets, audits, clients, locations, sites, users } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
@@ -139,6 +139,15 @@ auditRoutes.post("/clients/:id/audits", requireUser, async (c) => {
   }
 
   return c.json({ audit }, 201);
+});
+
+auditRoutes.get("/audits", requireUser, async (c) => {
+  const db = c.get("services").db;
+  const rows = await auditQuery(db)
+    .where(clientVisibility(db, c.get("user")))
+    .orderBy(sql`${audits.dueDate} ASC NULLS LAST`, asc(audits.title));
+  const listed = await presentAudits(db, rows);
+  return c.json({ auditCount: listed.length, audits: listed });
 });
 
 auditRoutes.get("/audits/:id", requireUser, async (c) => {
