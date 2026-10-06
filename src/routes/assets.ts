@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
-import { ASSET_STATUSES, assetTypes, assets, bcisRefs, bcisSubRefs, elements, groups, locations, sites, subElements } from "../db/schema/index.js";
+import { ASSET_STATUSES, assetTypes, assets, bcisRefs, bcisSubRefs, clients, elements, groups, locations, sites, subElements } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody } from "./http.js";
@@ -280,6 +280,8 @@ const assetListColumns = {
   siteId: locations.siteId,
   locationCode: locations.locationCode,
   locationName: locations.name,
+  clientId: clients.id,
+  clientName: clients.name,
   assetTypeCode: assetTypes.code,
   assetTypeName: assetTypes.name,
   groupCode: groups.code,
@@ -299,6 +301,8 @@ function assetListQuery(db: Database) {
     .select(assetListColumns)
     .from(assets)
     .innerJoin(locations, eq(assets.locationId, locations.id))
+    .innerJoin(sites, eq(sites.id, locations.siteId))
+    .innerJoin(clients, eq(clients.id, sites.clientId))
     .innerJoin(assetTypes, eq(assets.assetTypeId, assetTypes.id))
     .leftJoin(groups, eq(assets.groupId, groups.id))
     .leftJoin(elements, eq(assets.elementId, elements.id))
@@ -489,6 +493,8 @@ function presentAsset(asset: {
   siteId: string;
   locationCode: string | null;
   locationName: string | null;
+  clientId: string;
+  clientName: string;
   assetTypeCode: string;
   assetTypeName: string;
   groupId: string | null;
@@ -509,6 +515,10 @@ function presentAsset(asset: {
 }) {
   return {
     id: asset.id,
+    client: {
+      id: asset.clientId,
+      name: asset.clientName,
+    },
     locationId: asset.locationId,
     location: {
       id: asset.locationId,

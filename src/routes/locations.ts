@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
-import { locations, sites } from "../db/schema/index.js";
+import { clients, locations, sites } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, readBody } from "./http.js";
@@ -78,7 +78,13 @@ locationRoutes.post("/sites/:id/locations", requireUser, async (c) => {
     throw new Error("Location was not created.");
   }
 
-  return c.json({ location: presentLocation(created) }, 201);
+  const location = await loadLocation(db, c.get("user"), created.id);
+
+  if (!location) {
+    throw new Error("Location was not created.");
+  }
+
+  return c.json({ location }, 201);
 });
 
 locationRoutes.get("/locations/:id", requireUser, async (c) => {
@@ -168,19 +174,34 @@ async function visibleSite(db: Database, user: Parameters<typeof clientIsVisible
 }
 
 async function loadLocation(db: Database, user: Parameters<typeof clientIsVisible>[1], id: string) {
-  const [row] = await db.select().from(locations).where(eq(locations.id, id)).limit(1);
+  const [row] = await db
+    .select({
+      id: locations.id,
+      siteId: locations.siteId,
+      locationCode: locations.locationCode,
+      name: locations.name,
+      createdAt: locations.createdAt,
+      updatedAt: locations.updatedAt,
+      clientId: clients.id,
+      clientName: clients.name,
+    })
+    .from(locations)
+    .innerJoin(sites, eq(sites.id, locations.siteId))
+    .innerJoin(clients, eq(clients.id, sites.clientId))
+    .where(eq(locations.id, id))
+    .limit(1);
 
-  if (!row) {
+  if (!row || !(await clientIsVisible(db, user, row.clientId))) {
     return null;
   }
 
-  const site = await visibleSite(db, user, row.siteId);
-
-  if (!site) {
-    return null;
-  }
-
-  return presentLocation(row);
+  return {
+    ...presentLocation(row),
+    client: {
+      id: row.clientId,
+      name: row.clientName,
+    },
+  };
 }
 
 function presentLocation(location: typeof locations.$inferSelect) {
