@@ -62,6 +62,24 @@ const updateAssetSchema = z
 
 export const assetRoutes = new Hono<AppEnv>();
 
+assetRoutes.get("/sites/:id/assets", requireUser, async (c) => {
+  const siteId = parseId(c.req.param("id"));
+
+  if (!siteId) {
+    return c.json({ error: "Site not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const site = await visibleSite(db, c.get("user"), siteId);
+
+  if (!site) {
+    return c.json({ error: "Site not found." }, 404);
+  }
+
+  const rows = await assetsForSite(db, siteId);
+  return c.json({ assetCount: rows.length, assets: rows });
+});
+
 assetRoutes.get("/locations/:id/assets", requireUser, async (c) => {
   const locationId = parseId(c.req.param("id"));
 
@@ -119,13 +137,19 @@ assetRoutes.post("/locations/:id/assets", requireUser, async (c) => {
       expectedLifeYears: parsed.data.expectedLifeYears ?? null,
       status: parsed.data.status ?? "active",
     })
-    .returning();
+    .returning({ id: assets.id });
 
   if (!created) {
     throw new Error("Asset was not created.");
   }
 
-  return c.json({ asset: presentAsset(created) }, 201);
+  const asset = await loadAsset(db, c.get("user"), created.id);
+
+  if (!asset) {
+    throw new Error("Asset was not created.");
+  }
+
+  return c.json({ asset }, 201);
 });
 
 assetRoutes.get("/assets/:id", requireUser, async (c) => {
@@ -207,14 +231,60 @@ assetRoutes.delete("/assets/:id", requireUser, async (c) => {
   return c.json({ ok: true });
 });
 
-async function assetsForLocation(db: Database, locationId: string) {
-  const rows = await db
-    .select()
+const assetListColumns = {
+  id: assets.id,
+  locationId: assets.locationId,
+  assetTypeId: assets.assetTypeId,
+  assetRef: assets.assetRef,
+  assetName: assets.assetName,
+  description: assets.description,
+  quantity: assets.quantity,
+  unitOfMeasure: assets.unitOfMeasure,
+  installationDate: assets.installationDate,
+  estimatedAgeYears: assets.estimatedAgeYears,
+  expectedLifeYears: assets.expectedLifeYears,
+  status: assets.status,
+  createdAt: assets.createdAt,
+  updatedAt: assets.updatedAt,
+  siteId: locations.siteId,
+  locationCode: locations.locationCode,
+  locationName: locations.name,
+  assetTypeCode: assetTypes.code,
+  assetTypeName: assetTypes.name,
+};
+
+function assetListQuery(db: Database) {
+  return db
+    .select(assetListColumns)
     .from(assets)
+    .innerJoin(locations, eq(assets.locationId, locations.id))
+    .innerJoin(assetTypes, eq(assets.assetTypeId, assetTypes.id));
+}
+
+async function assetsForLocation(db: Database, locationId: string) {
+  const rows = await assetListQuery(db)
     .where(eq(assets.locationId, locationId))
     .orderBy(asc(assets.assetRef), asc(assets.assetName));
 
   return rows.map((row) => presentAsset(row));
+}
+
+async function assetsForSite(db: Database, siteId: string) {
+  const rows = await assetListQuery(db)
+    .where(eq(locations.siteId, siteId))
+    .orderBy(asc(locations.name), asc(locations.locationCode), asc(assets.assetRef), asc(assets.assetName));
+
+  return rows.map((row) => presentAsset(row));
+}
+
+async function visibleSite(db: Database, user: AuthUser, siteId: string) {
+  const [site] = await db.select({ id: sites.id, clientId: sites.clientId }).from(sites).where(eq(sites.id, siteId)).limit(1);
+
+  if (!site || !(await clientIsVisible(db, user, site.clientId))) {
+    return null;
+  }
+
+  return site;
 }
 
 async function visibleLocation(db: Database, user: AuthUser, locationId: string) {
@@ -233,7 +303,7 @@ async function visibleLocation(db: Database, user: AuthUser, locationId: string)
 }
 
 async function loadAsset(db: Database, user: AuthUser, id: string) {
-  const [row] = await db.select().from(assets).where(eq(assets.id, id)).limit(1);
+  const [row] = await assetListQuery(db).where(eq(assets.id, id)).limit(1);
 
   if (!row) {
     return null;
@@ -253,11 +323,42 @@ async function assetTypeExists(db: Database, id: string) {
   return Boolean(row);
 }
 
-function presentAsset(asset: typeof assets.$inferSelect) {
+function presentAsset(asset: {
+  id: string;
+  locationId: string;
+  assetTypeId: string;
+  assetRef: string;
+  assetName: string | null;
+  description: string | null;
+  quantity: number | null;
+  unitOfMeasure: string | null;
+  installationDate: string | null;
+  estimatedAgeYears: number | null;
+  expectedLifeYears: number | null;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+  siteId: string;
+  locationCode: string | null;
+  locationName: string | null;
+  assetTypeCode: string;
+  assetTypeName: string;
+}) {
   return {
     id: asset.id,
     locationId: asset.locationId,
+    location: {
+      id: asset.locationId,
+      siteId: asset.siteId,
+      locationCode: asset.locationCode,
+      name: asset.locationName,
+    },
     assetTypeId: asset.assetTypeId,
+    assetType: {
+      id: asset.assetTypeId,
+      code: asset.assetTypeCode,
+      name: asset.assetTypeName,
+    },
     assetRef: asset.assetRef,
     assetName: asset.assetName,
     description: asset.description,
