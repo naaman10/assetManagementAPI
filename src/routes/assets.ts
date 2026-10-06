@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
-import { ASSET_STATUSES, assetTypes, assets, locations, sites } from "../db/schema/index.js";
+import { ASSET_STATUSES, assetTypes, assets, bcisRefs, bcisSubRefs, elements, groups, locations, sites, subElements } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody } from "./http.js";
@@ -30,6 +30,8 @@ const installationDate = z
     message: "Enter a date as YYYY-MM-DD.",
   });
 
+const optionalId = z.uuid().nullable().optional();
+
 const createAssetSchema = z.object({
   assetTypeId: z.uuid(),
   assetRef,
@@ -41,6 +43,11 @@ const createAssetSchema = z.object({
   estimatedAgeYears: years,
   expectedLifeYears: years,
   status: z.enum(ASSET_STATUSES).optional(),
+  groupId: optionalId,
+  elementId: optionalId,
+  subElementId: optionalId,
+  bcisRefId: optionalId,
+  bcisSubRefId: optionalId,
 });
 
 const updateAssetSchema = z
@@ -55,6 +62,11 @@ const updateAssetSchema = z
     estimatedAgeYears: years,
     expectedLifeYears: years,
     status: z.enum(ASSET_STATUSES).optional(),
+    groupId: optionalId,
+    elementId: optionalId,
+    subElementId: optionalId,
+    bcisRefId: optionalId,
+    bcisSubRefId: optionalId,
   })
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
     message: "No changes were provided.",
@@ -122,11 +134,18 @@ assetRoutes.post("/locations/:id/assets", requireUser, async (c) => {
     return c.json({ error: "Asset type not found." }, 404);
   }
 
+  const classification = await classificationForAsset(db, parsed.data);
+
+  if ("error" in classification) {
+    return c.json({ error: classification.error }, classification.status);
+  }
+
   const [created] = await db
     .insert(assets)
     .values({
       locationId,
       assetTypeId: parsed.data.assetTypeId,
+      ...classification,
       assetRef: parsed.data.assetRef,
       assetName: blankToNull(parsed.data.assetName),
       description: blankToNull(parsed.data.description),
@@ -192,10 +211,17 @@ assetRoutes.patch("/assets/:id", requireUser, async (c) => {
     return c.json({ error: "Asset type not found." }, 404);
   }
 
+  const classification = await classificationForAsset(db, parsed.data, current);
+
+  if ("error" in classification) {
+    return c.json({ error: classification.error }, classification.status);
+  }
+
   await db
     .update(assets)
     .set({
       assetTypeId: parsed.data.assetTypeId ?? current.assetTypeId,
+      ...classification,
       assetRef: parsed.data.assetRef ?? current.assetRef,
       assetName: parsed.data.assetName === undefined ? current.assetName : blankToNull(parsed.data.assetName),
       description: parsed.data.description === undefined ? current.description : blankToNull(parsed.data.description),
@@ -246,11 +272,26 @@ const assetListColumns = {
   status: assets.status,
   createdAt: assets.createdAt,
   updatedAt: assets.updatedAt,
+  groupId: assets.groupId,
+  elementId: assets.elementId,
+  subElementId: assets.subElementId,
+  bcisRefId: assets.bcisRefId,
+  bcisSubRefId: assets.bcisSubRefId,
   siteId: locations.siteId,
   locationCode: locations.locationCode,
   locationName: locations.name,
   assetTypeCode: assetTypes.code,
   assetTypeName: assetTypes.name,
+  groupCode: groups.code,
+  groupName: groups.name,
+  elementCode: elements.code,
+  elementName: elements.name,
+  subElementCode: subElements.code,
+  subElementName: subElements.name,
+  bcisRefCode: bcisRefs.code,
+  bcisRefName: bcisRefs.name,
+  bcisSubRefCode: bcisSubRefs.code,
+  bcisSubRefName: bcisSubRefs.name,
 };
 
 function assetListQuery(db: Database) {
@@ -258,7 +299,12 @@ function assetListQuery(db: Database) {
     .select(assetListColumns)
     .from(assets)
     .innerJoin(locations, eq(assets.locationId, locations.id))
-    .innerJoin(assetTypes, eq(assets.assetTypeId, assetTypes.id));
+    .innerJoin(assetTypes, eq(assets.assetTypeId, assetTypes.id))
+    .leftJoin(groups, eq(assets.groupId, groups.id))
+    .leftJoin(elements, eq(assets.elementId, elements.id))
+    .leftJoin(subElements, eq(assets.subElementId, subElements.id))
+    .leftJoin(bcisRefs, eq(assets.bcisRefId, bcisRefs.id))
+    .leftJoin(bcisSubRefs, eq(assets.bcisSubRefId, bcisSubRefs.id));
 }
 
 async function assetsForLocation(db: Database, locationId: string) {
@@ -323,6 +369,108 @@ async function assetTypeExists(db: Database, id: string) {
   return Boolean(row);
 }
 
+async function classificationForAsset(
+  db: Database,
+  input: {
+    groupId?: string | null;
+    elementId?: string | null;
+    subElementId?: string | null;
+    bcisRefId?: string | null;
+    bcisSubRefId?: string | null;
+  },
+  current?: {
+    groupId: string | null;
+    elementId: string | null;
+    subElementId: string | null;
+    bcisRefId: string | null;
+    bcisSubRefId: string | null;
+  },
+) {
+  const groupId = chosenId(input.groupId, current?.groupId);
+  const elementId = chosenId(input.elementId, current?.elementId);
+  const subElementId = chosenId(input.subElementId, current?.subElementId);
+  const bcisRefId = chosenId(input.bcisRefId, current?.bcisRefId);
+  const bcisSubRefId = chosenId(input.bcisSubRefId, current?.bcisSubRefId);
+
+  if (groupId) {
+    const [group] = await db.select({ id: groups.id }).from(groups).where(eq(groups.id, groupId)).limit(1);
+
+    if (!group) {
+      return { status: 404 as const, error: "Group not found." };
+    }
+  }
+
+  if (elementId) {
+    const [element] = await db.select({ groupId: elements.groupId }).from(elements).where(eq(elements.id, elementId)).limit(1);
+
+    if (!element) {
+      return { status: 404 as const, error: "Element not found." };
+    }
+
+    if (!groupId) {
+      return { status: 400 as const, error: "Choose a group for this element." };
+    }
+
+    if (element.groupId !== groupId) {
+      return { status: 400 as const, error: "Element does not belong to that group." };
+    }
+  }
+
+  if (subElementId) {
+    const [subElement] = await db
+      .select({ elementId: subElements.elementId })
+      .from(subElements)
+      .where(eq(subElements.id, subElementId))
+      .limit(1);
+
+    if (!subElement) {
+      return { status: 404 as const, error: "Sub element not found." };
+    }
+
+    if (!elementId) {
+      return { status: 400 as const, error: "Choose an element for this sub element." };
+    }
+
+    if (subElement.elementId !== elementId) {
+      return { status: 400 as const, error: "Sub element does not belong to that element." };
+    }
+  }
+
+  if (bcisRefId) {
+    const [bcisRef] = await db.select({ id: bcisRefs.id }).from(bcisRefs).where(eq(bcisRefs.id, bcisRefId)).limit(1);
+
+    if (!bcisRef) {
+      return { status: 404 as const, error: "BCIS reference not found." };
+    }
+  }
+
+  if (bcisSubRefId) {
+    const [bcisSubRef] = await db
+      .select({ bcisRefId: bcisSubRefs.bcisRefId })
+      .from(bcisSubRefs)
+      .where(eq(bcisSubRefs.id, bcisSubRefId))
+      .limit(1);
+
+    if (!bcisSubRef) {
+      return { status: 404 as const, error: "BCIS sub reference not found." };
+    }
+
+    if (!bcisRefId) {
+      return { status: 400 as const, error: "Choose a BCIS reference for this BCIS sub reference." };
+    }
+
+    if (bcisSubRef.bcisRefId !== bcisRefId) {
+      return { status: 400 as const, error: "BCIS sub reference does not belong to that BCIS reference." };
+    }
+  }
+
+  return { groupId, elementId, subElementId, bcisRefId, bcisSubRefId };
+}
+
+function chosenId(next: string | null | undefined, previous: string | null | undefined) {
+  return next === undefined ? (previous ?? null) : next;
+}
+
 function presentAsset(asset: {
   id: string;
   locationId: string;
@@ -343,6 +491,21 @@ function presentAsset(asset: {
   locationName: string | null;
   assetTypeCode: string;
   assetTypeName: string;
+  groupId: string | null;
+  elementId: string | null;
+  subElementId: string | null;
+  bcisRefId: string | null;
+  bcisSubRefId: string | null;
+  groupCode: string | null;
+  groupName: string | null;
+  elementCode: string | null;
+  elementName: string | null;
+  subElementCode: string | null;
+  subElementName: string | null;
+  bcisRefCode: string | null;
+  bcisRefName: string | null;
+  bcisSubRefCode: string | null;
+  bcisSubRefName: string | null;
 }) {
   return {
     id: asset.id,
@@ -359,6 +522,16 @@ function presentAsset(asset: {
       code: asset.assetTypeCode,
       name: asset.assetTypeName,
     },
+    groupId: asset.groupId,
+    group: catalogRef(asset.groupId, asset.groupCode, asset.groupName),
+    elementId: asset.elementId,
+    element: catalogRef(asset.elementId, asset.elementCode, asset.elementName),
+    subElementId: asset.subElementId,
+    subElement: catalogRef(asset.subElementId, asset.subElementCode, asset.subElementName),
+    bcisRefId: asset.bcisRefId,
+    bcisRef: catalogRef(asset.bcisRefId, asset.bcisRefCode, asset.bcisRefName),
+    bcisSubRefId: asset.bcisSubRefId,
+    bcisSubRef: catalogRef(asset.bcisSubRefId, asset.bcisSubRefCode, asset.bcisSubRefName),
     assetRef: asset.assetRef,
     assetName: asset.assetName,
     description: asset.description,
@@ -371,6 +544,14 @@ function presentAsset(asset: {
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
   };
+}
+
+function catalogRef(id: string | null, code: string | null, name: string | null) {
+  if (!id || !code || !name) {
+    return null;
+  }
+
+  return { id, code, name };
 }
 
 function parseId(value: string) {

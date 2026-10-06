@@ -40,6 +40,7 @@ src/
   routes/locations.ts    site locations
   routes/assets.ts       location assets
   routes/assetTypes.ts   asset type catalog
+  routes/classifications.ts  groups, elements, sub elements, and BCIS references
   storage/assets.ts      Neon assets bucket
 ```
 
@@ -144,6 +145,42 @@ These routes require the session cookie. Asset types are shared catalog data, so
 
 Create an asset type with `{ "code", "name", "description", "classificationType", "parentId", "isActive" }`. `code` and `name` are required. The others are optional. `classificationType` defaults to `asset` and `isActive` defaults to true. Update an asset type with any of those fields. A duplicate code returns `409`. An unknown asset type or parent returns `404`. A parent that would nest an asset type under itself returns `400`. Delete returns `{ "ok": true }`. Deleting an asset type that still has children, or that is still used by an asset, returns `409`.
 
+## Classification
+
+These routes require the session cookie. Groups, elements, sub elements, BCIS references, and BCIS sub references are shared catalogs, so access is the permission below and does not depend on client membership. The `admin` role receives each permission on the next boot. Each record is `{ "id", "code", "name", "description", "isActive", "createdAt", "updatedAt" }`. An element also has `groupId`. A sub element also has `elementId`. A BCIS sub reference also has `bcisRefId`. `description` may be null. `code` is unique within its catalog. Lists are ordered by code.
+
+An element belongs to one group. A sub element belongs to one element. A BCIS sub reference belongs to one BCIS reference. The migration seeds one example of each chain: group `EBF` External Building Fabric, element `ROOF-STR` Roof Structure, sub element `TPR` Timber Purlin and Rafters, BCIS reference `2` Superstructure, and BCIS sub reference `2.3` Roof.
+
+| Action | Request | Permission |
+| --- | --- | --- |
+| List groups | `GET /groups` | `group:view` |
+| Create group | `POST /groups` | `group:create` |
+| Read group | `GET /groups/:id` | `group:view` |
+| Update group | `PATCH /groups/:id` | `group:edit` |
+| Delete group | `DELETE /groups/:id` | `group:delete` |
+| List elements | `GET /elements` | `element:view` |
+| Create element | `POST /elements` | `element:create` |
+| Read element | `GET /elements/:id` | `element:view` |
+| Update element | `PATCH /elements/:id` | `element:edit` |
+| Delete element | `DELETE /elements/:id` | `element:delete` |
+| List sub elements | `GET /sub-elements` | `subElement:view` |
+| Create sub element | `POST /sub-elements` | `subElement:create` |
+| Read sub element | `GET /sub-elements/:id` | `subElement:view` |
+| Update sub element | `PATCH /sub-elements/:id` | `subElement:edit` |
+| Delete sub element | `DELETE /sub-elements/:id` | `subElement:delete` |
+| List BCIS references | `GET /bcis-refs` | `bcisRef:view` |
+| Create BCIS reference | `POST /bcis-refs` | `bcisRef:create` |
+| Read BCIS reference | `GET /bcis-refs/:id` | `bcisRef:view` |
+| Update BCIS reference | `PATCH /bcis-refs/:id` | `bcisRef:edit` |
+| Delete BCIS reference | `DELETE /bcis-refs/:id` | `bcisRef:delete` |
+| List BCIS sub references | `GET /bcis-sub-refs` | `bcisSubRef:view` |
+| Create BCIS sub reference | `POST /bcis-sub-refs` | `bcisSubRef:create` |
+| Read BCIS sub reference | `GET /bcis-sub-refs/:id` | `bcisSubRef:view` |
+| Update BCIS sub reference | `PATCH /bcis-sub-refs/:id` | `bcisSubRef:edit` |
+| Delete BCIS sub reference | `DELETE /bcis-sub-refs/:id` | `bcisSubRef:delete` |
+
+Create a group or BCIS reference with `{ "code", "name", "description", "isActive" }`. `code` and `name` are required. Create an element with `{ "groupId", "code", "name", "description", "isActive" }`. Create a sub element with `{ "elementId", "code", "name", "description", "isActive" }`. Create a BCIS sub reference with `{ "bcisRefId", "code", "name", "description", "isActive" }`. `isActive` defaults to true. Update with any of the fields for that catalog. A duplicate code returns `409`. An unknown record or parent returns `404`. Delete returns `{ "ok": true }`. Deleting a record that still has children, or that is still used by an asset, returns `409`. Moving an element, sub element, or BCIS sub reference to a different parent while an asset uses it returns `409`.
+
 ## Clients
 
 These routes require the session cookie. Contacts, sites, and settings use the parent client's permission. There is no separate contact, site, or settings permission. The `admin` role receives `clients:view`, `clients:create`, `clients:edit`, and `clients:delete` on the next boot.
@@ -186,7 +223,7 @@ Create a site with `{ "name", "reference", "address", "contactId" }`. `reference
 
 `GET /sites/:id/locations` returns `{ "locationCount", "locations" }` for a sponsor, a member, or an admin. `locations` is ordered by name. Each location is `{ "id", "siteId", "locationCode", "name", "createdAt", "updatedAt" }`. `locationCode` and `name` are optional and may be null. `locationCode` is at most 100 characters and `name` is at most 255. Create a location with `{ "locationCode", "name" }`. Update a location with any of those fields. Send null or an empty string to clear one. Create location returns `201`. Delete location returns `{ "ok": true }`. An unknown location returns `404`. Deleting a location deletes its assets. Deleting a client deletes its sites, its locations, and its assets.
 
-`GET /locations/:id/assets` returns `{ "assetCount", "assets" }` for a sponsor, a member, or an admin of that location's client. Those assets are ordered by reference. `GET /sites/:id/assets` returns the same shape for every asset on that site's locations, ordered by location name, then location code, then reference. Each asset is `{ "id", "locationId", "location", "assetTypeId", "assetType", "assetRef", "assetName", "description", "quantity", "unitOfMeasure", "installationDate", "estimatedAgeYears", "expectedLifeYears", "status", "createdAt", "updatedAt" }`. `location` is `{ "id", "siteId", "locationCode", "name" }`. `assetType` is `{ "id", "code", "name" }`. `assetName`, `description`, `quantity`, `unitOfMeasure`, `installationDate`, `estimatedAgeYears`, and `expectedLifeYears` may be null. `assetRef` is required and is at most 100 characters. `unitOfMeasure` is at most 30 characters. `quantity` has up to 2 decimal places. `installationDate` is `YYYY-MM-DD`. `estimatedAgeYears` and `expectedLifeYears` are zero or greater. `status` is `active`, `inactive`, `out_of_service`, `decommissioned`, `disposed`, `proposed`, `under_installation`, `awaiting_commissioning`, or `deleted`, and defaults to `active`. Create an asset with `{ "assetTypeId", "assetRef", "assetName", "description", "quantity", "unitOfMeasure", "installationDate", "estimatedAgeYears", "expectedLifeYears", "status" }`. `assetTypeId` and `assetRef` are required. The location comes from the URL and cannot be changed. Update an asset with any of those fields. Send null or an empty string to clear an optional text or date field. Send null to clear quantity or a year count. Create asset returns `201`. Delete asset returns `{ "ok": true }` and removes the row. Setting `status` to `deleted` keeps the row. An unknown site, location, asset, or asset type returns `404`.
+`GET /locations/:id/assets` returns `{ "assetCount", "assets" }` for a sponsor, a member, or an admin of that location's client. Those assets are ordered by reference. `GET /sites/:id/assets` returns the same shape for every asset on that site's locations, ordered by location name, then location code, then reference. Each asset is `{ "id", "locationId", "location", "assetTypeId", "assetType", "groupId", "group", "elementId", "element", "subElementId", "subElement", "bcisRefId", "bcisRef", "bcisSubRefId", "bcisSubRef", "assetRef", "assetName", "description", "quantity", "unitOfMeasure", "installationDate", "estimatedAgeYears", "expectedLifeYears", "status", "createdAt", "updatedAt" }`. `location` is `{ "id", "siteId", "locationCode", "name" }`. `assetType`, `group`, `element`, `subElement`, `bcisRef`, and `bcisSubRef` are `{ "id", "code", "name" }`, or `null`. `assetName`, `description`, `quantity`, `unitOfMeasure`, `installationDate`, `estimatedAgeYears`, and `expectedLifeYears` may be null. `assetRef` is required and is at most 100 characters. `unitOfMeasure` is at most 30 characters. `quantity` has up to 2 decimal places. `installationDate` is `YYYY-MM-DD`. `estimatedAgeYears` and `expectedLifeYears` are zero or greater. `status` is `active`, `inactive`, `out_of_service`, `decommissioned`, `disposed`, `proposed`, `under_installation`, `awaiting_commissioning`, or `deleted`, and defaults to `active`. Create an asset with `{ "assetTypeId", "assetRef", "assetName", "description", "quantity", "unitOfMeasure", "installationDate", "estimatedAgeYears", "expectedLifeYears", "status", "groupId", "elementId", "subElementId", "bcisRefId", "bcisSubRefId" }`. `assetTypeId` and `assetRef` are required. The classification ids are optional. An element must belong to the selected group, a sub element must belong to the selected element, and a BCIS sub reference must belong to the selected BCIS reference. Sending a child without its parent returns `400`. The location comes from the URL and cannot be changed. Update an asset with any of those fields. Send null or an empty string to clear an optional text or date field. Send null to clear quantity, a year count, or a classification id. Create asset returns `201`. Delete asset returns `{ "ok": true }` and removes the row. Setting `status` to `deleted` keeps the row. An unknown site, location, asset, or asset type returns `404`.
 
 Upload a logo as multipart form data with one field named `logo`. The file must be a JPEG, PNG, or WebP image of 2 MB or less. The API stores it in the private Neon `assets` bucket and replaces any previous logo. Deleting a client deletes its logo, its contacts, its sites, its locations, its assets, and its settings.
 

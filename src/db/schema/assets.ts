@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { check, date, index, integer, numeric, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
 import { assetTypes } from "./assetTypes.js";
+import { bcisRefs, bcisSubRefs, elements, groups, subElements } from "./classifications.js";
 import { locations } from "./locations.js";
 
 export const ASSET_STATUSES = [
@@ -25,6 +26,11 @@ export const assets = pgTable(
     assetTypeId: uuid("asset_type_id")
       .notNull()
       .references(() => assetTypes.id, { onDelete: "restrict" }),
+    groupId: uuid("group_id").references(() => groups.id, { onDelete: "restrict" }),
+    elementId: uuid("element_id").references(() => elements.id, { onDelete: "restrict" }),
+    subElementId: uuid("sub_element_id").references(() => subElements.id, { onDelete: "restrict" }),
+    bcisRefId: uuid("bcis_ref_id").references(() => bcisRefs.id, { onDelete: "restrict" }),
+    bcisSubRefId: uuid("bcis_sub_ref_id").references(() => bcisSubRefs.id, { onDelete: "restrict" }),
     assetRef: varchar("asset_ref", { length: 100 }).notNull(),
     assetName: text("asset_name"),
     description: text("description"),
@@ -44,6 +50,11 @@ export const assets = pgTable(
   (table) => [
     index("assets_location_id_idx").on(table.locationId),
     index("assets_asset_type_id_idx").on(table.assetTypeId),
+    index("assets_group_id_idx").on(table.groupId),
+    index("assets_element_id_idx").on(table.elementId),
+    index("assets_sub_element_id_idx").on(table.subElementId),
+    index("assets_bcis_ref_id_idx").on(table.bcisRefId),
+    index("assets_bcis_sub_ref_id_idx").on(table.bcisSubRefId),
     check(
       "assets_status_check",
       sql`${table.status} IN ('active', 'inactive', 'out_of_service', 'decommissioned', 'disposed', 'proposed', 'under_installation', 'awaiting_commissioning', 'deleted')`,

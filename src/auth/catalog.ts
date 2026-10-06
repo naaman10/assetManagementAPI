@@ -15,6 +15,26 @@ export const ASSET_TYPES_VIEW = "assetType:view";
 export const ASSET_TYPES_CREATE = "assetType:create";
 export const ASSET_TYPES_EDIT = "assetType:edit";
 export const ASSET_TYPES_DELETE = "assetType:delete";
+export const GROUPS_VIEW = "group:view";
+export const GROUPS_CREATE = "group:create";
+export const GROUPS_EDIT = "group:edit";
+export const GROUPS_DELETE = "group:delete";
+export const ELEMENTS_VIEW = "element:view";
+export const ELEMENTS_CREATE = "element:create";
+export const ELEMENTS_EDIT = "element:edit";
+export const ELEMENTS_DELETE = "element:delete";
+export const SUB_ELEMENTS_VIEW = "subElement:view";
+export const SUB_ELEMENTS_CREATE = "subElement:create";
+export const SUB_ELEMENTS_EDIT = "subElement:edit";
+export const SUB_ELEMENTS_DELETE = "subElement:delete";
+export const BCIS_REFS_VIEW = "bcisRef:view";
+export const BCIS_REFS_CREATE = "bcisRef:create";
+export const BCIS_REFS_EDIT = "bcisRef:edit";
+export const BCIS_REFS_DELETE = "bcisRef:delete";
+export const BCIS_SUB_REFS_VIEW = "bcisSubRef:view";
+export const BCIS_SUB_REFS_CREATE = "bcisSubRef:create";
+export const BCIS_SUB_REFS_EDIT = "bcisSubRef:edit";
+export const BCIS_SUB_REFS_DELETE = "bcisSubRef:delete";
 export const ADMIN_ROLE = "admin";
 
 export const SEEDED_PERMISSIONS = [
@@ -35,6 +55,26 @@ export const SEEDED_PERMISSIONS = [
   { name: ASSET_TYPES_CREATE, description: "Create asset types." },
   { name: ASSET_TYPES_EDIT, description: "Update asset types." },
   { name: ASSET_TYPES_DELETE, description: "Delete asset types." },
+  { name: GROUPS_VIEW, description: "List and read groups." },
+  { name: GROUPS_CREATE, description: "Create groups." },
+  { name: GROUPS_EDIT, description: "Update groups." },
+  { name: GROUPS_DELETE, description: "Delete groups." },
+  { name: ELEMENTS_VIEW, description: "List and read elements." },
+  { name: ELEMENTS_CREATE, description: "Create elements." },
+  { name: ELEMENTS_EDIT, description: "Update elements." },
+  { name: ELEMENTS_DELETE, description: "Delete elements." },
+  { name: SUB_ELEMENTS_VIEW, description: "List and read sub elements." },
+  { name: SUB_ELEMENTS_CREATE, description: "Create sub elements." },
+  { name: SUB_ELEMENTS_EDIT, description: "Update sub elements." },
+  { name: SUB_ELEMENTS_DELETE, description: "Delete sub elements." },
+  { name: BCIS_REFS_VIEW, description: "List and read BCIS references." },
+  { name: BCIS_REFS_CREATE, description: "Create BCIS references." },
+  { name: BCIS_REFS_EDIT, description: "Update BCIS references." },
+  { name: BCIS_REFS_DELETE, description: "Delete BCIS references." },
+  { name: BCIS_SUB_REFS_VIEW, description: "List and read BCIS sub references." },
+  { name: BCIS_SUB_REFS_CREATE, description: "Create BCIS sub references." },
+  { name: BCIS_SUB_REFS_EDIT, description: "Update BCIS sub references." },
+  { name: BCIS_SUB_REFS_DELETE, description: "Delete BCIS sub references." },
 ] as const;
 
 export const LEGACY_PERMISSIONS: Record<string, readonly string[]> = {
