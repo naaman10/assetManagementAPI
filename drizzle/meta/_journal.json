@@ -99,6 +99,13 @@
       "when": 1791454876686,
       "tag": "0013_easy_stephen_strange",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1791467090332,
+      "tag": "0014_lethal_vertigo",
+      "breakpoints": true
     }
   ]
 }

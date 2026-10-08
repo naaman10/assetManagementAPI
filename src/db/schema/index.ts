@@ -15,4 +15,5 @@ export { roles } from "./roles.js";
 export { sessions } from "./sessions.js";
 export { sites } from "./sites.js";
 export { userRoles } from "./userRoles.js";
+export { WORK_ORDER_PRIORITIES, WORK_ORDER_STATUSES, workOrders } from "./workOrders.js";
 export { users } from "./users.js";

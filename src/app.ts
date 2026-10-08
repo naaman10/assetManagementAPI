@@ -16,6 +16,7 @@ import { health } from "./routes/health.js";
 import { permissionRoutes } from "./routes/permissions.js";
 import { roleRoutes } from "./routes/roles.js";
 import { userRoutes } from "./routes/users.js";
+import { workOrderRoutes } from "./routes/workOrders.js";
 import type { Services } from "./services.js";
 import type { AppEnv } from "./types.js";
 
@@ -47,6 +48,7 @@ export function createApp(services: Services) {
   app.route("/", classificationRoutes);
   app.route("/", maintenanceTypeRoutes);
   app.route("/", maintenanceScheduleRoutes);
+  app.route("/", workOrderRoutes);
   app.route("/", roleRoutes);
   app.route("/", permissionRoutes);
 

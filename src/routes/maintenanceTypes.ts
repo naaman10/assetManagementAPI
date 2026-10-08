@@ -8,7 +8,7 @@ import {
   MAINTENANCE_TYPES_VIEW,
 } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { maintenanceSchedules, maintenanceTypes } from "../db/schema/index.js";
+import { maintenanceSchedules, maintenanceTypes, workOrders } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
@@ -156,6 +156,16 @@ maintenanceTypeRoutes.delete("/maintenance-types/:id", requirePermission(MAINTEN
 
   if (usedBySchedule) {
     return c.json({ error: "This maintenance type is still used by maintenance schedules." }, 409);
+  }
+
+  const [usedByWorkOrder] = await db
+    .select({ id: workOrders.id })
+    .from(workOrders)
+    .where(eq(workOrders.maintenanceTypeId, id))
+    .limit(1);
+
+  if (usedByWorkOrder) {
+    return c.json({ error: "This maintenance type is still used by work orders." }, 409);
   }
 
   try {
