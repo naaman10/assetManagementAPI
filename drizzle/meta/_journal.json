@@ -85,6 +85,13 @@
       "when": 1791293344084,
       "tag": "0011_square_firestar",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791449809730,
+      "tag": "0012_dark_namor",
+      "breakpoints": true
     }
   ]
 }

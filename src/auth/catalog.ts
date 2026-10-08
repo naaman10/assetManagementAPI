@@ -35,6 +35,10 @@ export const BCIS_SUB_REFS_VIEW = "bcisSubRef:view";
 export const BCIS_SUB_REFS_CREATE = "bcisSubRef:create";
 export const BCIS_SUB_REFS_EDIT = "bcisSubRef:edit";
 export const BCIS_SUB_REFS_DELETE = "bcisSubRef:delete";
+export const MAINTENANCE_TYPES_VIEW = "maintenanceTypes:view";
+export const MAINTENANCE_TYPES_CREATE = "maintenanceTypes:create";
+export const MAINTENANCE_TYPES_EDIT = "maintenanceTypes:edit";
+export const MAINTENANCE_TYPES_DELETE = "maintenanceTypes:delete";
 export const ADMIN_ROLE = "admin";
 
 export const SEEDED_PERMISSIONS = [
@@ -75,6 +79,10 @@ export const SEEDED_PERMISSIONS = [
   { name: BCIS_SUB_REFS_CREATE, description: "Create BCIS sub references." },
   { name: BCIS_SUB_REFS_EDIT, description: "Update BCIS sub references." },
   { name: BCIS_SUB_REFS_DELETE, description: "Delete BCIS sub references." },
+  { name: MAINTENANCE_TYPES_VIEW, description: "List and read maintenance types." },
+  { name: MAINTENANCE_TYPES_CREATE, description: "Create maintenance types." },
+  { name: MAINTENANCE_TYPES_EDIT, description: "Update maintenance types." },
+  { name: MAINTENANCE_TYPES_DELETE, description: "Delete maintenance types." },
 ] as const;
 
 export const LEGACY_PERMISSIONS: Record<string, readonly string[]> = {

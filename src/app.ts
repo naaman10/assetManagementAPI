@@ -9,6 +9,7 @@ import { classificationRoutes } from "./routes/classifications.js";
 import { auth } from "./routes/auth.js";
 import { clientRoutes } from "./routes/clients.js";
 import { locationRoutes } from "./routes/locations.js";
+import { maintenanceTypeRoutes } from "./routes/maintenanceTypes.js";
 import { siteRoutes } from "./routes/sites.js";
 import { health } from "./routes/health.js";
 import { permissionRoutes } from "./routes/permissions.js";
@@ -43,6 +44,7 @@ export function createApp(services: Services) {
   app.route("/", auditRoutes);
   app.route("/", assetTypeRoutes);
   app.route("/", classificationRoutes);
+  app.route("/", maintenanceTypeRoutes);
   app.route("/", roleRoutes);
   app.route("/", permissionRoutes);
 

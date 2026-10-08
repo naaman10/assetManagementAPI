@@ -42,6 +42,7 @@ src/
   routes/audits.ts       client audits
   routes/assetTypes.ts   asset type catalog
   routes/classifications.ts  groups, elements, sub elements, and BCIS references
+  routes/maintenanceTypes.ts maintenance type catalog
   storage/assets.ts      Neon assets bucket
 ```
 
@@ -181,6 +182,20 @@ An element belongs to one group. A sub element belongs to one element. A BCIS su
 | Delete BCIS sub reference | `DELETE /bcis-sub-refs/:id` | `bcisSubRef:delete` |
 
 Create a group or BCIS reference with `{ "code", "name", "description", "isActive" }`. `code` and `name` are required. Create an element with `{ "groupId", "code", "name", "description", "isActive" }`. Create a sub element with `{ "elementId", "code", "name", "description", "isActive" }`. Create a BCIS sub reference with `{ "bcisRefId", "code", "name", "description", "isActive" }`. `isActive` defaults to true. Update with any of the fields for that catalog. A duplicate code returns `409`. An unknown record or parent returns `404`. Delete returns `{ "ok": true }`. Deleting a record that still has children, or that is still used by an asset, returns `409`. Moving an element, sub element, or BCIS sub reference to a different parent while an asset uses it returns `409`.
+
+## Maintenance types
+
+These routes require the session cookie. Maintenance types are shared catalog data, so access is the permission below and does not depend on client membership. The `admin` role receives `maintenanceTypes:view`, `maintenanceTypes:create`, `maintenanceTypes:edit`, and `maintenanceTypes:delete` on the next boot. Each record is `{ "id", "code", "name", "description", "sortOrder", "isActive", "createdAt", "updatedAt" }`. `description` may be null. `code` is unique. `sortOrder` is an integer and defaults to `0`. Lists are ordered by `sortOrder`, then code.
+
+| Action | Request | Permission |
+| --- | --- | --- |
+| List maintenance types | `GET /maintenance-types` | `maintenanceTypes:view` |
+| Create maintenance type | `POST /maintenance-types` | `maintenanceTypes:create` |
+| Read maintenance type | `GET /maintenance-types/:id` | `maintenanceTypes:view` |
+| Update maintenance type | `PATCH /maintenance-types/:id` | `maintenanceTypes:edit` |
+| Delete maintenance type | `DELETE /maintenance-types/:id` | `maintenanceTypes:delete` |
+
+Create a maintenance type with `{ "code", "name", "description", "sortOrder", "isActive" }`. `code` and `name` are required. `sortOrder` defaults to `0` and `isActive` defaults to true. Update a maintenance type with any of those fields. A duplicate code returns `409`. An unknown maintenance type returns `404`. Delete returns `{ "ok": true }`. Deleting a maintenance type that is still in use returns `409`.
 
 ## Clients
 
