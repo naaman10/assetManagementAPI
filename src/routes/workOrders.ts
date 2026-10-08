@@ -1,7 +1,7 @@
 import { asc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import { clientIsVisible } from "../auth/clientAccess.js";
+import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import {
   WORK_ORDER_PRIORITIES,
@@ -156,6 +156,15 @@ workOrderRoutes.post("/assets/:id/work-orders", requireUser, async (c) => {
   }
 
   return c.json({ workOrder }, 201);
+});
+
+workOrderRoutes.get("/work-orders", requireUser, async (c) => {
+  const db = c.get("services").db;
+  const rows = await workOrderQuery(db)
+    .where(clientVisibility(db, c.get("user")))
+    .orderBy(sql`${workOrders.dueDate} ASC NULLS LAST`, asc(workOrders.title));
+
+  return c.json({ workOrderCount: rows.length, workOrders: rows.map((row) => presentWorkOrder(row)) });
 });
 
 workOrderRoutes.get("/work-orders/:id", requireUser, async (c) => {
