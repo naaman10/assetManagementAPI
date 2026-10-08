@@ -11,6 +11,7 @@ import { clientRoutes } from "./routes/clients.js";
 import { locationRoutes } from "./routes/locations.js";
 import { maintenanceScheduleRoutes } from "./routes/maintenanceSchedules.js";
 import { maintenanceTypeRoutes } from "./routes/maintenanceTypes.js";
+import { searchRoutes } from "./routes/search.js";
 import { siteRoutes } from "./routes/sites.js";
 import { health } from "./routes/health.js";
 import { permissionRoutes } from "./routes/permissions.js";
@@ -41,6 +42,7 @@ export function createApp(services: Services) {
   app.route("/", userRoutes);
   app.route("/", clientRoutes);
   app.route("/", siteRoutes);
+  app.route("/", searchRoutes);
   app.route("/", locationRoutes);
   app.route("/", assetRoutes);
   app.route("/", auditRoutes);
