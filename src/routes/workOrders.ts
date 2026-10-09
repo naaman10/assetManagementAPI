@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { nextReference } from "../db/nextReference.js";
 import {
   WORK_ORDER_PRIORITIES,
   WORK_ORDER_STATUSES,
@@ -128,22 +129,27 @@ workOrderRoutes.post("/assets/:id/work-orders", requireUser, async (c) => {
     return c.json({ error: "Assignee not found." }, 404);
   }
 
-  const [created] = await db
-    .insert(workOrders)
-    .values({
-      assetId,
-      scheduleId: schedule.scheduleId,
-      maintenanceTypeId: parsed.data.maintenanceTypeId,
-      assignedTo,
-      title: parsed.data.title,
-      description: blankToNull(parsed.data.description),
-      priority: parsed.data.priority ?? "medium",
-      status: parsed.data.status ?? "open",
-      dueDate: blankToNull(parsed.data.dueDate),
-      scheduledDate: blankToNull(parsed.data.scheduledDate),
-      completedAt: timestampOrNull(parsed.data.completedAt),
-    })
-    .returning({ id: workOrders.id });
+  const [created] = await db.transaction(async (tx) => {
+    const reference = await nextReference(tx, asset.clientId, "WO");
+
+    return tx
+      .insert(workOrders)
+      .values({
+        assetId,
+        reference,
+        scheduleId: schedule.scheduleId,
+        maintenanceTypeId: parsed.data.maintenanceTypeId,
+        assignedTo,
+        title: parsed.data.title,
+        description: blankToNull(parsed.data.description),
+        priority: parsed.data.priority ?? "medium",
+        status: parsed.data.status ?? "open",
+        dueDate: blankToNull(parsed.data.dueDate),
+        scheduledDate: blankToNull(parsed.data.scheduledDate),
+        completedAt: timestampOrNull(parsed.data.completedAt),
+      })
+      .returning({ id: workOrders.id });
+  });
 
   if (!created) {
     throw new Error("Work order was not created.");
@@ -278,6 +284,7 @@ const workOrderColumns = {
   assignedTo: workOrders.assignedTo,
   assigneeEmail: users.email,
   assigneeName: users.name,
+  reference: workOrders.reference,
   title: workOrders.title,
   description: workOrders.description,
   priority: workOrders.priority,
@@ -390,6 +397,7 @@ function presentWorkOrder(row: {
   assignedTo: string | null;
   assigneeEmail: string | null;
   assigneeName: string | null;
+  reference: string;
   title: string;
   description: string | null;
   priority: string;
@@ -429,6 +437,7 @@ function presentWorkOrder(row: {
     },
     assignedTo: row.assignedTo,
     assignee: row.assignedTo && row.assigneeEmail ? { id: row.assignedTo, email: row.assigneeEmail, name: row.assigneeName } : null,
+    reference: row.reference,
     title: row.title,
     description: row.description,
     priority: row.priority,

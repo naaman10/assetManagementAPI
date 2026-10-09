@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { nextReference } from "../db/nextReference.js";
 import { FREQUENCY_UNITS, assets, clients, locations, maintenanceSchedules, maintenanceTypes, sites } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
@@ -111,24 +112,29 @@ maintenanceScheduleRoutes.post("/assets/:id/maintenance-schedules", requireUser,
     return c.json({ error: "Maintenance type not found." }, 404);
   }
 
-  const [created] = await db
-    .insert(maintenanceSchedules)
-    .values({
-      assetId,
-      maintenanceTypeId: parsed.data.maintenanceTypeId,
-      name: parsed.data.name,
-      description: blankToNull(parsed.data.description),
-      frequencyValue: parsed.data.frequencyValue,
-      frequencyUnit: parsed.data.frequencyUnit,
-      autoWorkorder: parsed.data.autoWorkorder ?? false,
-      startDate: blankToNull(parsed.data.startDate),
-      lastCompletedDate: blankToNull(parsed.data.lastCompletedDate),
-      nextDueDate: blankToNull(parsed.data.nextDueDate),
-      estimatedDurationMinutes: parsed.data.estimatedDurationMinutes ?? null,
-      estimatedCost: parsed.data.estimatedCost ?? null,
-      isActive: parsed.data.isActive ?? true,
-    })
-    .returning({ id: maintenanceSchedules.id });
+  const [created] = await db.transaction(async (tx) => {
+    const reference = await nextReference(tx, asset.clientId, "MS");
+
+    return tx
+      .insert(maintenanceSchedules)
+      .values({
+        assetId,
+        reference,
+        maintenanceTypeId: parsed.data.maintenanceTypeId,
+        name: parsed.data.name,
+        description: blankToNull(parsed.data.description),
+        frequencyValue: parsed.data.frequencyValue,
+        frequencyUnit: parsed.data.frequencyUnit,
+        autoWorkorder: parsed.data.autoWorkorder ?? false,
+        startDate: blankToNull(parsed.data.startDate),
+        lastCompletedDate: blankToNull(parsed.data.lastCompletedDate),
+        nextDueDate: blankToNull(parsed.data.nextDueDate),
+        estimatedDurationMinutes: parsed.data.estimatedDurationMinutes ?? null,
+        estimatedCost: parsed.data.estimatedCost ?? null,
+        isActive: parsed.data.isActive ?? true,
+      })
+      .returning({ id: maintenanceSchedules.id });
+  });
 
   if (!created) {
     throw new Error("Maintenance schedule was not created.");
@@ -240,6 +246,7 @@ const scheduleColumns = {
   maintenanceTypeId: maintenanceSchedules.maintenanceTypeId,
   maintenanceTypeCode: maintenanceTypes.code,
   maintenanceTypeName: maintenanceTypes.name,
+  reference: maintenanceSchedules.reference,
   name: maintenanceSchedules.name,
   description: maintenanceSchedules.description,
   frequencyValue: maintenanceSchedules.frequencyValue,
@@ -319,6 +326,7 @@ function presentSchedule(row: {
   maintenanceTypeId: string;
   maintenanceTypeCode: string;
   maintenanceTypeName: string;
+  reference: string;
   name: string;
   description: string | null;
   frequencyValue: number;
@@ -358,6 +366,7 @@ function presentSchedule(row: {
       code: row.maintenanceTypeCode,
       name: row.maintenanceTypeName,
     },
+    reference: row.reference,
     name: row.name,
     description: row.description,
     frequencyValue: row.frequencyValue,

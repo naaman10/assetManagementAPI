@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, date, index, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
+import { check, date, index, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
 import { assets } from "./assets.js";
 import { maintenanceSchedules } from "./maintenanceSchedules.js";
 import { maintenanceTypes } from "./maintenanceTypes.js";
@@ -20,6 +20,7 @@ export const workOrders = pgTable(
       .notNull()
       .references(() => maintenanceTypes.id, { onDelete: "restrict" }),
     assignedTo: uuid("assigned_to").references(() => users.id, { onDelete: "set null" }),
+    reference: varchar("reference", { length: 255 }).notNull(),
     title: varchar("title", { length: 255 }).notNull(),
     description: text("description"),
     priority: varchar("priority", { length: 30 }).notNull().default("medium"),
@@ -31,6 +32,7 @@ export const workOrders = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   },
   (table) => [
+    uniqueIndex("work_orders_reference_unique").on(table.reference),
     index("work_orders_asset_id_idx").on(table.assetId),
     index("work_orders_schedule_id_idx").on(table.scheduleId),
     index("work_orders_maintenance_type_id_idx").on(table.maintenanceTypeId),

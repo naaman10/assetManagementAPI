@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, date, index, integer, numeric, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
+import { boolean, check, date, index, integer, numeric, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
 import { assets } from "./assets.js";
 import { maintenanceTypes } from "./maintenanceTypes.js";
 
@@ -15,6 +15,7 @@ export const maintenanceSchedules = pgTable(
     maintenanceTypeId: uuid("maintenance_type_id")
       .notNull()
       .references(() => maintenanceTypes.id, { onDelete: "restrict" }),
+    reference: varchar("reference", { length: 255 }).notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
     frequencyValue: integer("frequency_value").notNull(),
@@ -30,6 +31,7 @@ export const maintenanceSchedules = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   },
   (table) => [
+    uniqueIndex("maintenance_schedules_reference_unique").on(table.reference),
     index("maintenance_schedules_asset_id_idx").on(table.assetId),
     index("maintenance_schedules_maintenance_type_id_idx").on(table.maintenanceTypeId),
     check("maintenance_schedules_frequency_value_check", sql`${table.frequencyValue} > 0`),

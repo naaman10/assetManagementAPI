@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
-import { assets, clients, locations, sites, workOrders } from "../db/schema/index.js";
+import { assets, clients, locations, maintenanceSchedules, sites, workOrders } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 
@@ -12,7 +12,7 @@ const RESULT_LIMIT = 20;
 const PER_TYPE_LIMIT = 20;
 
 type SearchResult = {
-  type: "site" | "location" | "asset" | "workOrder";
+  type: "site" | "location" | "asset" | "maintenanceSchedule" | "workOrder";
   id: string;
   name: string;
   rank: number;
@@ -41,14 +41,15 @@ searchRoutes.get("/search", requireUser, async (c) => {
 
   const db = c.get("services").db;
   const user = c.get("user");
-  const [siteRows, locationRows, assetRows, workOrderRows] = await Promise.all([
+  const [siteRows, locationRows, assetRows, scheduleRows, workOrderRows] = await Promise.all([
     searchSites(db, user, query),
     searchLocations(db, user, query),
     searchAssets(db, user, query),
+    searchSchedules(db, user, query),
     searchWorkOrders(db, user, query),
   ]);
 
-  const results = [...siteRows, ...locationRows, ...assetRows, ...workOrderRows]
+  const results = [...siteRows, ...locationRows, ...assetRows, ...scheduleRows, ...workOrderRows]
     .sort((left, right) => left.rank - right.rank || left.name.localeCompare(right.name) || left.type.localeCompare(right.type))
     .slice(0, RESULT_LIMIT)
     .map(presentResult);
@@ -142,8 +143,38 @@ async function searchAssets(db: Database, user: AuthUser, query: string): Promis
   }));
 }
 
+async function searchSchedules(db: Database, user: AuthUser, query: string): Promise<SearchResult[]> {
+  const rank = bestRank([maintenanceSchedules.name, maintenanceSchedules.reference], query);
+  const rows = await db
+    .select({
+      id: maintenanceSchedules.id,
+      name: maintenanceSchedules.name,
+      assetId: maintenanceSchedules.assetId,
+      clientId: clients.id,
+      clientName: clients.name,
+      rank,
+    })
+    .from(maintenanceSchedules)
+    .innerJoin(assets, eq(maintenanceSchedules.assetId, assets.id))
+    .innerJoin(locations, eq(assets.locationId, locations.id))
+    .innerJoin(sites, eq(locations.siteId, sites.id))
+    .innerJoin(clients, eq(sites.clientId, clients.id))
+    .where(visible(db, user, matches([maintenanceSchedules.name, maintenanceSchedules.reference], query)))
+    .orderBy(asc(rank), asc(maintenanceSchedules.reference))
+    .limit(PER_TYPE_LIMIT);
+
+  return rows.map((row) => ({
+    type: "maintenanceSchedule",
+    id: row.id,
+    name: row.name,
+    rank: Number(row.rank),
+    assetId: row.assetId,
+    client: { id: row.clientId, name: row.clientName },
+  }));
+}
+
 async function searchWorkOrders(db: Database, user: AuthUser, query: string): Promise<SearchResult[]> {
-  const rank = bestRank([workOrders.title], query);
+  const rank = bestRank([workOrders.title, workOrders.reference], query);
   const rows = await db
     .select({
       id: workOrders.id,
@@ -158,7 +189,7 @@ async function searchWorkOrders(db: Database, user: AuthUser, query: string): Pr
     .innerJoin(locations, eq(assets.locationId, locations.id))
     .innerJoin(sites, eq(locations.siteId, sites.id))
     .innerJoin(clients, eq(sites.clientId, clients.id))
-    .where(visible(db, user, matches([workOrders.title], query)))
+    .where(visible(db, user, matches([workOrders.title, workOrders.reference], query)))
     .orderBy(asc(rank), asc(workOrders.title))
     .limit(PER_TYPE_LIMIT);
 
@@ -216,7 +247,7 @@ function presentResult(result: SearchResult) {
     return { ...base, assetRef: result.assetRef, locationId: result.locationId };
   }
 
-  if (result.type === "workOrder") {
+  if (result.type === "maintenanceSchedule" || result.type === "workOrder") {
     return { ...base, assetId: result.assetId };
   }
 

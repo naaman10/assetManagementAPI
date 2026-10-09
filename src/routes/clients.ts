@@ -35,7 +35,7 @@ const addressPatchSchema = z.object({
   country: z.string().trim().min(1).max(120).optional(),
 });
 
-const optionalReference = z.string().trim().max(200).nullable().optional();
+const requiredReference = z.string().trim().min(1).max(200);
 
 const contactSchema = z.object({
   name: z.string().trim().min(1).max(200),
@@ -52,7 +52,7 @@ const contactPatchSchema = contactSchema
 
 const createClientSchema = z.object({
   name: z.string().trim().min(1).max(200),
-  reference: optionalReference,
+  reference: requiredReference,
   address: addressSchema,
   contacts: z.array(contactSchema).max(50).optional().default([]),
 });
@@ -60,7 +60,7 @@ const createClientSchema = z.object({
 const updateClientSchema = z
   .object({
     name: z.string().trim().min(1).max(200).optional(),
-    reference: optionalReference,
+    reference: requiredReference.optional(),
     address: addressPatchSchema.optional(),
   })
   .refine((value) => value.name !== undefined || value.reference !== undefined || value.address !== undefined, {
@@ -105,7 +105,7 @@ clientRoutes.post("/clients", requirePermission(CLIENTS_CREATE), async (c) => {
         .insert(clients)
         .values({
           name: parsed.data.name,
-          reference: blankToNull(parsed.data.reference),
+          reference: parsed.data.reference,
           addressLine1: address.line1,
           addressLine2: blankToNull(address.line2),
           city: address.city,
@@ -182,20 +182,24 @@ clientRoutes.patch("/clients/:id", requirePermission(CLIENTS_EDIT), async (c) =>
 
   const address = parsed.data.address;
 
-  await db
-    .update(clients)
-    .set({
-      name: parsed.data.name ?? current.name,
-      reference: parsed.data.reference === undefined ? current.reference : blankToNull(parsed.data.reference),
-      addressLine1: address?.line1 ?? current.addressLine1,
-      addressLine2: address?.line2 === undefined ? current.addressLine2 : blankToNull(address.line2),
-      city: address?.city ?? current.city,
-      county: address?.county === undefined ? current.county : blankToNull(address.county),
-      postcode: address?.postcode ?? current.postcode,
-      country: address?.country ?? current.country,
-      updatedAt: new Date(),
-    })
-    .where(eq(clients.id, id));
+  try {
+    await db
+      .update(clients)
+      .set({
+        name: parsed.data.name ?? current.name,
+        reference: parsed.data.reference ?? current.reference,
+        addressLine1: address?.line1 ?? current.addressLine1,
+        addressLine2: address?.line2 === undefined ? current.addressLine2 : blankToNull(address.line2),
+        city: address?.city ?? current.city,
+        county: address?.county === undefined ? current.county : blankToNull(address.county),
+        postcode: address?.postcode ?? current.postcode,
+        country: address?.country ?? current.country,
+        updatedAt: new Date(),
+      })
+      .where(eq(clients.id, id));
+  } catch (error) {
+    return routeError(c, error);
+  }
 
   return c.json({ client: await loadClient(db, c.get("services").assets, id) });
 });

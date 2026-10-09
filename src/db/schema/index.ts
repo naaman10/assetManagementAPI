@@ -10,6 +10,7 @@ export { locations } from "./locations.js";
 export { maintenanceTypes } from "./maintenanceTypes.js";
 export { FREQUENCY_UNITS, maintenanceSchedules } from "./maintenanceSchedules.js";
 export { permissions } from "./permissions.js";
+export { REFERENCE_KINDS, referenceCounters } from "./referenceCounters.js";
 export { rolePermissions } from "./rolePermissions.js";
 export { roles } from "./roles.js";
 export { sessions } from "./sessions.js";
