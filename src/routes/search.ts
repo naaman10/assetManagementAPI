@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
-import { assets, clients, locations, maintenanceSchedules, sites, workOrders } from "../db/schema/index.js";
+import { assets, clients, locations, maintenanceHistory, maintenanceSchedules, sites, workOrders } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 
@@ -12,7 +12,7 @@ const RESULT_LIMIT = 20;
 const PER_TYPE_LIMIT = 20;
 
 type SearchResult = {
-  type: "site" | "location" | "asset" | "maintenanceSchedule" | "workOrder";
+  type: "site" | "location" | "asset" | "maintenanceSchedule" | "workOrder" | "maintenanceHistory";
   id: string;
   name: string;
   rank: number;
@@ -22,6 +22,7 @@ type SearchResult = {
   locationCode?: string | null;
   assetId?: string;
   assetRef?: string;
+  workOrderId?: string | null;
 };
 
 export const searchRoutes = new Hono<AppEnv>();
@@ -41,15 +42,16 @@ searchRoutes.get("/search", requireUser, async (c) => {
 
   const db = c.get("services").db;
   const user = c.get("user");
-  const [siteRows, locationRows, assetRows, scheduleRows, workOrderRows] = await Promise.all([
+  const [siteRows, locationRows, assetRows, scheduleRows, workOrderRows, historyRows] = await Promise.all([
     searchSites(db, user, query),
     searchLocations(db, user, query),
     searchAssets(db, user, query),
     searchSchedules(db, user, query),
     searchWorkOrders(db, user, query),
+    searchHistory(db, user, query),
   ]);
 
-  const results = [...siteRows, ...locationRows, ...assetRows, ...scheduleRows, ...workOrderRows]
+  const results = [...siteRows, ...locationRows, ...assetRows, ...scheduleRows, ...workOrderRows, ...historyRows]
     .sort((left, right) => left.rank - right.rank || left.name.localeCompare(right.name) || left.type.localeCompare(right.type))
     .slice(0, RESULT_LIMIT)
     .map(presentResult);
@@ -173,6 +175,38 @@ async function searchSchedules(db: Database, user: AuthUser, query: string): Pro
   }));
 }
 
+async function searchHistory(db: Database, user: AuthUser, query: string): Promise<SearchResult[]> {
+  const rank = bestRank([maintenanceHistory.referenceNumber, maintenanceHistory.workDescription], query);
+  const rows = await db
+    .select({
+      id: maintenanceHistory.id,
+      name: maintenanceHistory.workDescription,
+      assetId: maintenanceHistory.assetId,
+      workOrderId: maintenanceHistory.workOrderId,
+      clientId: clients.id,
+      clientName: clients.name,
+      rank,
+    })
+    .from(maintenanceHistory)
+    .innerJoin(assets, eq(maintenanceHistory.assetId, assets.id))
+    .innerJoin(locations, eq(assets.locationId, locations.id))
+    .innerJoin(sites, eq(locations.siteId, sites.id))
+    .innerJoin(clients, eq(sites.clientId, clients.id))
+    .where(visible(db, user, matches([maintenanceHistory.referenceNumber, maintenanceHistory.workDescription], query)))
+    .orderBy(asc(rank), asc(maintenanceHistory.referenceNumber))
+    .limit(PER_TYPE_LIMIT);
+
+  return rows.map((row) => ({
+    type: "maintenanceHistory",
+    id: row.id,
+    name: row.name,
+    rank: Number(row.rank),
+    assetId: row.assetId,
+    workOrderId: row.workOrderId,
+    client: { id: row.clientId, name: row.clientName },
+  }));
+}
+
 async function searchWorkOrders(db: Database, user: AuthUser, query: string): Promise<SearchResult[]> {
   const rank = bestRank([workOrders.title, workOrders.reference], query);
   const rows = await db
@@ -249,6 +283,10 @@ function presentResult(result: SearchResult) {
 
   if (result.type === "maintenanceSchedule" || result.type === "workOrder") {
     return { ...base, assetId: result.assetId };
+  }
+
+  if (result.type === "maintenanceHistory") {
+    return { ...base, assetId: result.assetId, workOrderId: result.workOrderId ?? null };
   }
 
   return base;

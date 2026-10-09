@@ -5,7 +5,7 @@ import type * as schema from "./schema/index.js";
 import { clients, referenceCounters } from "./schema/index.js";
 import type { Database } from "./types.js";
 
-export type ReferenceKind = "MS" | "WO";
+export type ReferenceKind = "MS" | "WO" | "MH";
 
 type ReferenceDb =
   | Database
