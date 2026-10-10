@@ -3,10 +3,11 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
 import { clients, locations, sites } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
-import { invalidRequest, readBody } from "./http.js";
+import { invalidRequest, readBody, routeError } from "./http.js";
 
 const locationCode = z.string().trim().max(100).nullable().optional();
 const locationName = z.string().trim().max(255).nullable().optional();
@@ -149,7 +150,13 @@ locationRoutes.delete("/locations/:id", requireUser, async (c) => {
     return c.json({ error: "Location not found." }, 404);
   }
 
-  await db.delete(locations).where(eq(locations.id, id));
+  try {
+    await removeHistoryPhotos(db, c.get("services").assets, { locationId: id });
+    await db.delete(locations).where(eq(locations.id, id));
+  } catch (error) {
+    return routeError(c, error);
+  }
+
   return c.json({ ok: true });
 });
 

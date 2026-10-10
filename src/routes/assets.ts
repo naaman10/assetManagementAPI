@@ -3,10 +3,11 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
 import { ASSET_STATUSES, assetTypes, assets, bcisRefs, bcisSubRefs, clients, elements, groups, locations, sites, subElements } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
-import { invalidRequest, readBody } from "./http.js";
+import { invalidRequest, readBody, routeError } from "./http.js";
 
 const assetRef = z.string().trim().min(1).max(100);
 const optionalText = (max: number) => z.string().trim().max(max).nullable().optional();
@@ -253,7 +254,13 @@ assetRoutes.delete("/assets/:id", requireUser, async (c) => {
     return c.json({ error: "Asset not found." }, 404);
   }
 
-  await db.delete(assets).where(eq(assets.id, id));
+  try {
+    await removeHistoryPhotos(db, c.get("services").assets, { assetId: id });
+    await db.delete(assets).where(eq(assets.id, id));
+  } catch (error) {
+    return routeError(c, error);
+  }
+
   return c.json({ ok: true });
 });
 

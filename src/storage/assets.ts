@@ -6,7 +6,7 @@ const LOGO_URL_SECONDS = 60 * 60;
 
 export class AssetStorageError extends Error {
   constructor() {
-    super("Logo storage is unavailable.");
+    super("Storage is unavailable.");
     this.name = "AssetStorageError";
   }
 }
@@ -54,20 +54,52 @@ export function createAssetStorage(env: Env) {
       }
     },
 
-    async logoUrl(key: string | null) {
-      if (!key) {
-        return null;
+    async putHistoryPhoto(clientId: string, historyId: string, photoId: string, body: Uint8Array, contentType: string) {
+      const key = historyPhotoKey(clientId, historyId, photoId);
+
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Body: body,
+            ContentType: contentType,
+          }),
+        );
+      } catch (error) {
+        console.error("Failed to store maintenance history photo", error);
+        throw new AssetStorageError();
       }
 
-      return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
-        expiresIn: LOGO_URL_SECONDS,
-      });
+      return key;
+    },
+
+    async logoUrl(key: string | null) {
+      return signedUrl(client, bucket, key);
+    },
+
+    async photoUrl(key: string) {
+      return signedUrl(client, bucket, key);
     },
   };
+}
+
+async function signedUrl(client: S3Client, bucket: string, key: string | null) {
+  if (!key) {
+    return null;
+  }
+
+  return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
+    expiresIn: LOGO_URL_SECONDS,
+  });
 }
 
 export type AssetStorage = ReturnType<typeof createAssetStorage>;
 
 function logoKey(clientId: string) {
   return `clients/${clientId}/logo`;
+}
+
+function historyPhotoKey(clientId: string, historyId: string, photoId: string) {
+  return `clients/${clientId}/maintenance-history/${historyId}/${photoId}`;
 }

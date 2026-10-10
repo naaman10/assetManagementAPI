@@ -2,6 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility, isAdmin } from "../auth/clientAccess.js";
+import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
 import { CLIENTS_CREATE, CLIENTS_DELETE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
 import { clientContacts, clientMembers, clientSettings, clients, sites, users } from "../db/schema/index.js";
@@ -275,9 +276,13 @@ clientRoutes.delete("/clients/:id", requirePermission(CLIENTS_DELETE), async (c)
   }
 
   try {
+    const storage = c.get("services").assets;
+
     if (current.logoKey) {
-      await c.get("services").assets.deleteObject(current.logoKey);
+      await storage.deleteObject(current.logoKey);
     }
+
+    await removeHistoryPhotos(db, storage, { clientId: id });
 
     await db.transaction(async (tx) => {
       await tx.delete(sites).where(eq(sites.clientId, id));

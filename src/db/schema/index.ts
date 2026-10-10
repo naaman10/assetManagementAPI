@@ -8,6 +8,7 @@ export { clientSettings } from "./clientSettings.js";
 export { clients } from "./clients.js";
 export { locations } from "./locations.js";
 export { maintenanceHistory } from "./maintenanceHistory.js";
+export { maintenanceHistoryPhotos } from "./maintenanceHistoryPhotos.js";
 export { maintenanceTypes } from "./maintenanceTypes.js";
 export { FREQUENCY_UNITS, maintenanceSchedules } from "./maintenanceSchedules.js";
 export { permissions } from "./permissions.js";

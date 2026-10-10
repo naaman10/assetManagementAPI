@@ -1,13 +1,15 @@
-import { desc, eq } from "drizzle-orm";
+import { asc, count, desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
 import { nextReference } from "../db/nextReference.js";
-import { assets, clients, locations, maintenanceHistory, maintenanceTypes, sites, users, workOrders } from "../db/schema/index.js";
+import { assets, clients, locations, maintenanceHistory, maintenanceHistoryPhotos, maintenanceTypes, sites, users, workOrders } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
+import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
-import { invalidRequest, readBody } from "./http.js";
+import { invalidRequest, readBody, routeError } from "./http.js";
 
 const workDescription = z.string().trim().min(1).max(5000);
 const optionalText = z.string().trim().max(5000).nullable().optional();
@@ -40,6 +42,8 @@ const timestamp = z
   });
 const requiredTimestamp = z.string().trim().refine(isTimestamp, { message: "Enter a date and time." });
 const optionalId = z.uuid().nullable().optional();
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+const MAX_PHOTOS = 20;
 
 const createHistorySchema = z.object({
   maintenanceTypeId: z.uuid(),
@@ -99,7 +103,7 @@ maintenanceHistoryRoutes.get("/assets/:id/maintenance-history", requireUser, asy
     return c.json({ error: "Asset not found." }, 404);
   }
 
-  const rows = await historyForAsset(db, assetId);
+  const rows = await historyForAsset(db, c.get("services").assets, assetId);
   return c.json({ maintenanceHistoryCount: rows.length, maintenanceHistories: rows });
 });
 
@@ -172,7 +176,7 @@ maintenanceHistoryRoutes.post("/assets/:id/maintenance-history", requireUser, as
     throw new Error("Maintenance history was not created.");
   }
 
-  const record = await loadHistory(db, user, created.id);
+  const record = await loadHistory(db, c.get("services").assets, user, created.id);
 
   if (!record) {
     throw new Error("Maintenance history was not created.");
@@ -187,7 +191,10 @@ maintenanceHistoryRoutes.get("/maintenance-history", requireUser, async (c) => {
     .where(clientVisibility(db, c.get("user")))
     .orderBy(desc(maintenanceHistory.performedAt), desc(maintenanceHistory.referenceNumber));
 
-  return c.json({ maintenanceHistoryCount: rows.length, maintenanceHistories: rows.map((row) => presentHistory(row)) });
+  return c.json({
+    maintenanceHistoryCount: rows.length,
+    maintenanceHistories: await presentHistories(db, c.get("services").assets, rows),
+  });
 });
 
 maintenanceHistoryRoutes.get("/maintenance-history/:id", requireUser, async (c) => {
@@ -197,7 +204,7 @@ maintenanceHistoryRoutes.get("/maintenance-history/:id", requireUser, async (c) 
     return c.json({ error: "Maintenance history not found." }, 404);
   }
 
-  const record = await loadHistory(c.get("services").db, c.get("user"), id);
+  const record = await loadHistory(c.get("services").db, c.get("services").assets, c.get("user"), id);
 
   if (!record) {
     return c.json({ error: "Maintenance history not found." }, 404);
@@ -221,7 +228,7 @@ maintenanceHistoryRoutes.patch("/maintenance-history/:id", requireUser, async (c
 
   const db = c.get("services").db;
   const user = c.get("user");
-  const current = await loadHistory(db, user, id);
+  const current = await loadHistory(db, c.get("services").assets, user, id);
 
   if (!current) {
     return c.json({ error: "Maintenance history not found." }, 404);
@@ -268,7 +275,7 @@ maintenanceHistoryRoutes.patch("/maintenance-history/:id", requireUser, async (c
     })
     .where(eq(maintenanceHistory.id, id));
 
-  return c.json({ maintenanceHistory: await loadHistory(db, user, id) });
+  return c.json({ maintenanceHistory: await loadHistory(db, c.get("services").assets, user, id) });
 });
 
 maintenanceHistoryRoutes.delete("/maintenance-history/:id", requireUser, async (c) => {
@@ -279,13 +286,137 @@ maintenanceHistoryRoutes.delete("/maintenance-history/:id", requireUser, async (
   }
 
   const db = c.get("services").db;
-  const current = await loadHistory(db, c.get("user"), id);
+  const storage = c.get("services").assets;
+  const current = await loadHistory(db, storage, c.get("user"), id);
 
   if (!current) {
     return c.json({ error: "Maintenance history not found." }, 404);
   }
 
-  await db.delete(maintenanceHistory).where(eq(maintenanceHistory.id, id));
+  try {
+    await removeHistoryPhotos(db, storage, { historyId: id });
+    await db.delete(maintenanceHistory).where(eq(maintenanceHistory.id, id));
+  } catch (error) {
+    return routeError(c, error);
+  }
+
+  return c.json({ ok: true });
+});
+
+maintenanceHistoryRoutes.post("/maintenance-history/:id/photos", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Maintenance history not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const storage = c.get("services").assets;
+  const current = await loadHistory(db, storage, c.get("user"), id);
+
+  if (!current) {
+    return c.json({ error: "Maintenance history not found." }, 404);
+  }
+
+  let body: Record<string, unknown>;
+
+  try {
+    body = await c.req.parseBody();
+  } catch {
+    return c.json({ error: "Invalid request" }, 400);
+  }
+
+  const photo = body.photo;
+
+  if (!(photo instanceof File)) {
+    return c.json({ error: "A photo image is required." }, 400);
+  }
+
+  if (photo.size > MAX_PHOTO_BYTES) {
+    return c.json({ error: "Photo must be 10 MB or smaller." }, 400);
+  }
+
+  const bytes = new Uint8Array(await photo.arrayBuffer());
+  const contentType = imageType(bytes);
+
+  if (!contentType) {
+    return c.json({ error: "Photo must be a JPEG, PNG, or WebP image." }, 400);
+  }
+
+  const [existing] = await db
+    .select({ value: count() })
+    .from(maintenanceHistoryPhotos)
+    .where(eq(maintenanceHistoryPhotos.maintenanceHistoryId, id));
+
+  if ((existing?.value ?? 0) >= MAX_PHOTOS) {
+    return c.json({ error: "A maintenance history record can have at most 20 photos." }, 400);
+  }
+
+  const photoId = crypto.randomUUID();
+  let storageKey: string | null = null;
+
+  try {
+    storageKey = await storage.putHistoryPhoto(current.client.id, id, photoId, bytes, contentType);
+    await db.insert(maintenanceHistoryPhotos).values({
+      id: photoId,
+      maintenanceHistoryId: id,
+      storageKey,
+      contentType,
+    });
+  } catch (error) {
+    if (storageKey) {
+      try {
+        await storage.deleteObject(storageKey);
+      } catch (cleanupError) {
+        console.error("Failed to remove a history photo after a failed upload", cleanupError);
+      }
+    }
+
+    return routeError(c, error);
+  }
+
+  const saved = await presentPhoto(db, storage, photoId);
+
+  if (!saved) {
+    throw new Error("Maintenance history photo was not created.");
+  }
+
+  return c.json({ photo: saved }, 201);
+});
+
+maintenanceHistoryRoutes.delete("/maintenance-history/:id/photos/:photoId", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+  const photoId = parseId(c.req.param("photoId"));
+
+  if (!id || !photoId) {
+    return c.json({ error: "Photo not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const storage = c.get("services").assets;
+  const current = await loadHistory(db, storage, c.get("user"), id);
+
+  if (!current) {
+    return c.json({ error: "Photo not found." }, 404);
+  }
+
+  const [photo] = await db
+    .select()
+    .from(maintenanceHistoryPhotos)
+    .where(eq(maintenanceHistoryPhotos.id, photoId))
+    .limit(1);
+
+  if (!photo || photo.maintenanceHistoryId !== id) {
+    return c.json({ error: "Photo not found." }, 404);
+  }
+
+  try {
+    await storage.deleteObject(photo.storageKey);
+    await db.delete(maintenanceHistoryPhotos).where(eq(maintenanceHistoryPhotos.id, photoId));
+  } catch (error) {
+    return routeError(c, error);
+  }
+
   return c.json({ ok: true });
 });
 
@@ -340,22 +471,23 @@ function historyQuery(db: Database) {
     .leftJoin(users, eq(maintenanceHistory.performedBy, users.id));
 }
 
-async function historyForAsset(db: Database, assetId: string) {
+async function historyForAsset(db: Database, storage: AssetStorage, assetId: string) {
   const rows = await historyQuery(db)
     .where(eq(maintenanceHistory.assetId, assetId))
     .orderBy(desc(maintenanceHistory.performedAt), desc(maintenanceHistory.referenceNumber));
 
-  return rows.map((row) => presentHistory(row));
+  return presentHistories(db, storage, rows);
 }
 
-async function loadHistory(db: Database, user: AuthUser, id: string) {
+async function loadHistory(db: Database, storage: AssetStorage, user: AuthUser, id: string) {
   const [row] = await historyQuery(db).where(eq(maintenanceHistory.id, id)).limit(1);
 
   if (!row || !(await clientIsVisible(db, user, row.clientId))) {
     return null;
   }
 
-  return presentHistory(row);
+  const [record] = await presentHistories(db, storage, [row]);
+  return record ?? null;
 }
 
 async function visibleAsset(db: Database, user: AuthUser, assetId: string) {
@@ -409,6 +541,78 @@ async function userExists(db: Database, id: string) {
   return Boolean(row);
 }
 
+async function presentHistories(
+  db: Database,
+  storage: AssetStorage,
+  rows: Parameters<typeof presentHistory>[0][],
+) {
+  const photos = new Map<string, HistoryPhoto[]>();
+
+  if (rows.length > 0) {
+    const stored = await db
+      .select()
+      .from(maintenanceHistoryPhotos)
+      .where(
+        inArray(
+          maintenanceHistoryPhotos.maintenanceHistoryId,
+          rows.map((row) => row.id),
+        ),
+      )
+      .orderBy(asc(maintenanceHistoryPhotos.createdAt));
+
+    for (const photo of stored) {
+      const url = await storage.photoUrl(photo.storageKey);
+
+      if (!url) {
+        continue;
+      }
+
+      const list = photos.get(photo.maintenanceHistoryId) ?? [];
+      list.push({
+        id: photo.id,
+        url,
+        contentType: photo.contentType,
+        createdAt: photo.createdAt,
+      });
+      photos.set(photo.maintenanceHistoryId, list);
+    }
+  }
+
+  return rows.map((row) => presentHistory(row, photos.get(row.id) ?? []));
+}
+
+async function presentPhoto(db: Database, storage: AssetStorage, photoId: string) {
+  const [photo] = await db
+    .select()
+    .from(maintenanceHistoryPhotos)
+    .where(eq(maintenanceHistoryPhotos.id, photoId))
+    .limit(1);
+
+  if (!photo) {
+    return null;
+  }
+
+  const url = await storage.photoUrl(photo.storageKey);
+
+  if (!url) {
+    return null;
+  }
+
+  return {
+    id: photo.id,
+    url,
+    contentType: photo.contentType,
+    createdAt: photo.createdAt,
+  };
+}
+
+type HistoryPhoto = {
+  id: string;
+  url: string;
+  contentType: string;
+  createdAt: Date;
+};
+
 function presentHistory(row: {
   id: string;
   assetId: string;
@@ -445,7 +649,7 @@ function presentHistory(row: {
   notes: string | null;
   createdAt: Date;
   updatedAt: Date;
-}) {
+}, photos: HistoryPhoto[]) {
   return {
     id: row.id,
     assetId: row.assetId,
@@ -492,6 +696,7 @@ function presentHistory(row: {
     otherCost: row.otherCost,
     nextRecommendedDate: row.nextRecommendedDate,
     notes: row.notes,
+    photos,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -528,4 +733,40 @@ function isCalendarDate(value: string) {
 
 function isTimestamp(value: string) {
   return z.iso.datetime().safeParse(value).success;
+}
+
+function imageType(bytes: Uint8Array) {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  return null;
 }
