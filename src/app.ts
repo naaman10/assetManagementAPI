@@ -12,6 +12,7 @@ import { locationRoutes } from "./routes/locations.js";
 import { maintenanceHistoryRoutes } from "./routes/maintenanceHistory.js";
 import { maintenanceScheduleRoutes } from "./routes/maintenanceSchedules.js";
 import { maintenanceTypeRoutes } from "./routes/maintenanceTypes.js";
+import { projectTypeRoutes } from "./routes/projectTypes.js";
 import { searchRoutes } from "./routes/search.js";
 import { siteRoutes } from "./routes/sites.js";
 import { health } from "./routes/health.js";
@@ -50,6 +51,7 @@ export function createApp(services: Services) {
   app.route("/", assetTypeRoutes);
   app.route("/", classificationRoutes);
   app.route("/", maintenanceTypeRoutes);
+  app.route("/", projectTypeRoutes);
   app.route("/", maintenanceScheduleRoutes);
   app.route("/", workOrderRoutes);
   app.route("/", maintenanceHistoryRoutes);

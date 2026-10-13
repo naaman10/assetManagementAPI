@@ -44,6 +44,7 @@ src/
   routes/assetTypes.ts   asset type catalog
   routes/classifications.ts  groups, elements, sub elements, and BCIS references
   routes/maintenanceTypes.ts maintenance type catalog
+  routes/projectTypes.ts project type catalog
   routes/maintenanceSchedules.ts asset maintenance schedules
   routes/workOrders.ts   asset work orders
   storage/assets.ts      Neon assets bucket
@@ -199,6 +200,20 @@ These routes require the session cookie. Maintenance types are shared catalog da
 | Delete maintenance type | `DELETE /maintenance-types/:id` | `maintenanceTypes:delete` |
 
 Create a maintenance type with `{ "code", "name", "description", "sortOrder", "isActive" }`. `code` and `name` are required. `sortOrder` defaults to `0` and `isActive` defaults to true. Update a maintenance type with any of those fields. A duplicate code returns `409`. An unknown maintenance type returns `404`. Delete returns `{ "ok": true }`. Deleting a maintenance type that is still used by a maintenance schedule, a work order, or a maintenance history record returns `409`.
+
+## Project types
+
+These routes require the session cookie. Project types are shared catalog data, so access is the permission below and does not depend on client membership. The `admin` role receives `projectTypes:view`, `projectTypes:create`, `projectTypes:edit`, and `projectTypes:delete` on the next boot. Each record is `{ "id", "code", "name", "description", "sortOrder", "isActive", "createdAt", "updatedAt" }`. `description` may be null. `code` is unique. `sortOrder` is an integer and defaults to `0`. Lists are ordered by `sortOrder`, then code.
+
+| Action | Request | Permission |
+| --- | --- | --- |
+| List project types | `GET /project-types` | `projectTypes:view` |
+| Create project type | `POST /project-types` | `projectTypes:create` |
+| Read project type | `GET /project-types/:id` | `projectTypes:view` |
+| Update project type | `PATCH /project-types/:id` | `projectTypes:edit` |
+| Delete project type | `DELETE /project-types/:id` | `projectTypes:delete` |
+
+Create a project type with `{ "code", "name", "description", "sortOrder", "isActive" }`. `code` and `name` are required. `sortOrder` defaults to `0` and `isActive` defaults to true. Update a project type with any of those fields. A duplicate code returns `409`. An unknown project type returns `404`. Delete returns `{ "ok": true }`.
 
 ## Clients
 

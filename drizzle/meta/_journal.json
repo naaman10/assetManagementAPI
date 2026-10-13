@@ -127,6 +127,13 @@
       "when": 1791631932665,
       "tag": "0017_majestic_wong",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791887066303,
+      "tag": "0018_striped_magma",
+      "breakpoints": true
     }
   ]
 }

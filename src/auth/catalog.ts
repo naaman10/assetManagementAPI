@@ -39,6 +39,10 @@ export const MAINTENANCE_TYPES_VIEW = "maintenanceTypes:view";
 export const MAINTENANCE_TYPES_CREATE = "maintenanceTypes:create";
 export const MAINTENANCE_TYPES_EDIT = "maintenanceTypes:edit";
 export const MAINTENANCE_TYPES_DELETE = "maintenanceTypes:delete";
+export const PROJECT_TYPES_VIEW = "projectTypes:view";
+export const PROJECT_TYPES_CREATE = "projectTypes:create";
+export const PROJECT_TYPES_EDIT = "projectTypes:edit";
+export const PROJECT_TYPES_DELETE = "projectTypes:delete";
 export const ADMIN_ROLE = "admin";
 
 export const SEEDED_PERMISSIONS = [
@@ -83,6 +87,10 @@ export const SEEDED_PERMISSIONS = [
   { name: MAINTENANCE_TYPES_CREATE, description: "Create maintenance types." },
   { name: MAINTENANCE_TYPES_EDIT, description: "Update maintenance types." },
   { name: MAINTENANCE_TYPES_DELETE, description: "Delete maintenance types." },
+  { name: PROJECT_TYPES_VIEW, description: "List and read project types." },
+  { name: PROJECT_TYPES_CREATE, description: "Create project types." },
+  { name: PROJECT_TYPES_EDIT, description: "Update project types." },
+  { name: PROJECT_TYPES_DELETE, description: "Delete project types." },
 ] as const;
 
 export const LEGACY_PERMISSIONS: Record<string, readonly string[]> = {
