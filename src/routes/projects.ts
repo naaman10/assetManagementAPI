@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
-import { AUDIT_STATUSES, assets, auditAssets, audits, clients, locations, sites, users } from "../db/schema/index.js";
+import { PROJECT_STATUSES, assets, clients, locations, projectAssets, projectTypes, projects, sites, users } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody } from "./http.js";
@@ -21,10 +21,11 @@ const optionalDate = z
   });
 const assetIds = z.array(z.uuid()).max(500);
 
-const createAuditSchema = z.object({
+const createProjectSchema = z.object({
   title,
   projectReference,
-  status: z.enum(AUDIT_STATUSES).optional(),
+  projectTypeId: z.uuid(),
+  status: z.enum(PROJECT_STATUSES).optional(),
   description,
   startDate: optionalDate,
   dueDate: optionalDate,
@@ -32,11 +33,12 @@ const createAuditSchema = z.object({
   assetIds: assetIds.optional(),
 });
 
-const updateAuditSchema = z
+const updateProjectSchema = z
   .object({
     title: title.optional(),
     projectReference: projectReference.optional(),
-    status: z.enum(AUDIT_STATUSES).optional(),
+    projectTypeId: z.uuid().optional(),
+    status: z.enum(PROJECT_STATUSES).optional(),
     description,
     startDate: optionalDate,
     dueDate: optionalDate,
@@ -47,9 +49,9 @@ const updateAuditSchema = z
     message: "No changes were provided.",
   });
 
-export const auditRoutes = new Hono<AppEnv>();
+export const projectRoutes = new Hono<AppEnv>();
 
-auditRoutes.get("/clients/:id/audits", requireUser, async (c) => {
+projectRoutes.get("/clients/:id/projects", requireUser, async (c) => {
   const clientId = parseId(c.req.param("id"));
 
   if (!clientId) {
@@ -63,18 +65,18 @@ auditRoutes.get("/clients/:id/audits", requireUser, async (c) => {
     return c.json({ error: "Client not found." }, 404);
   }
 
-  const rows = await auditsForClient(db, clientId);
-  return c.json({ auditCount: rows.length, audits: rows });
+  const rows = await projectsForClient(db, clientId);
+  return c.json({ projectCount: rows.length, projects: rows });
 });
 
-auditRoutes.post("/clients/:id/audits", requireUser, async (c) => {
+projectRoutes.post("/clients/:id/projects", requireUser, async (c) => {
   const clientId = parseId(c.req.param("id"));
 
   if (!clientId) {
     return c.json({ error: "Client not found." }, 404);
   }
 
-  const parsed = createAuditSchema.safeParse(await readBody(c));
+  const parsed = createProjectSchema.safeParse(await readBody(c));
 
   if (!parsed.success) {
     return invalidRequest(c, parsed.error);
@@ -94,6 +96,10 @@ auditRoutes.post("/clients/:id/audits", requireUser, async (c) => {
     return c.json({ error: "The due date must be on or after the start date." }, 400);
   }
 
+  if (!(await projectTypeExists(db, parsed.data.projectTypeId))) {
+    return c.json({ error: "Project type not found." }, 404);
+  }
+
   const leadUserId = parsed.data.leadUserId ?? null;
 
   if (leadUserId && !(await userExists(db, leadUserId))) {
@@ -108,9 +114,10 @@ auditRoutes.post("/clients/:id/audits", requireUser, async (c) => {
 
   const [created] = await db.transaction(async (tx) => {
     const [row] = await tx
-      .insert(audits)
+      .insert(projects)
       .values({
         clientId,
+        projectTypeId: parsed.data.projectTypeId,
         leadUserId,
         title: parsed.data.title,
         projectReference: parsed.data.projectReference,
@@ -119,71 +126,71 @@ auditRoutes.post("/clients/:id/audits", requireUser, async (c) => {
         startDate,
         dueDate,
       })
-      .returning({ id: audits.id });
+      .returning({ id: projects.id });
 
     if (row && linkedAssetIds.length > 0) {
-      await tx.insert(auditAssets).values(linkedAssetIds.map((assetId) => ({ auditId: row.id, assetId })));
+      await tx.insert(projectAssets).values(linkedAssetIds.map((assetId) => ({ projectId: row.id, assetId })));
     }
 
     return [row];
   });
 
   if (!created) {
-    throw new Error("Audit was not created.");
+    throw new Error("Project was not created.");
   }
 
-  const audit = await loadAudit(db, c.get("user"), created.id);
+  const project = await loadProject(db, c.get("user"), created.id);
 
-  if (!audit) {
-    throw new Error("Audit was not created.");
+  if (!project) {
+    throw new Error("Project was not created.");
   }
 
-  return c.json({ audit }, 201);
+  return c.json({ project }, 201);
 });
 
-auditRoutes.get("/audits", requireUser, async (c) => {
+projectRoutes.get("/projects", requireUser, async (c) => {
   const db = c.get("services").db;
-  const rows = await auditQuery(db)
+  const rows = await projectQuery(db)
     .where(clientVisibility(db, c.get("user")))
-    .orderBy(sql`${audits.dueDate} ASC NULLS LAST`, asc(audits.title));
-  const listed = await presentAudits(db, rows);
-  return c.json({ auditCount: listed.length, audits: listed });
+    .orderBy(sql`${projects.dueDate} ASC NULLS LAST`, asc(projects.title));
+  const listed = await presentProjects(db, rows);
+  return c.json({ projectCount: listed.length, projects: listed });
 });
 
-auditRoutes.get("/audits/:id", requireUser, async (c) => {
+projectRoutes.get("/projects/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
-    return c.json({ error: "Audit not found." }, 404);
+    return c.json({ error: "Project not found." }, 404);
   }
 
-  const audit = await loadAudit(c.get("services").db, c.get("user"), id);
+  const project = await loadProject(c.get("services").db, c.get("user"), id);
 
-  if (!audit) {
-    return c.json({ error: "Audit not found." }, 404);
+  if (!project) {
+    return c.json({ error: "Project not found." }, 404);
   }
 
-  return c.json({ audit });
+  return c.json({ project });
 });
 
-auditRoutes.patch("/audits/:id", requireUser, async (c) => {
+projectRoutes.patch("/projects/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
-    return c.json({ error: "Audit not found." }, 404);
+    return c.json({ error: "Project not found." }, 404);
   }
 
-  const parsed = updateAuditSchema.safeParse(await readBody(c));
+  const parsed = updateProjectSchema.safeParse(await readBody(c));
 
   if (!parsed.success) {
     return invalidRequest(c, parsed.error);
   }
 
   const db = c.get("services").db;
-  const current = await loadAudit(db, c.get("user"), id);
+  const current = await loadProject(db, c.get("user"), id);
 
   if (!current) {
-    return c.json({ error: "Audit not found." }, 404);
+    return c.json({ error: "Project not found." }, 404);
   }
 
   const startDate = parsed.data.startDate === undefined ? current.startDate : blankToNull(parsed.data.startDate);
@@ -193,7 +200,11 @@ auditRoutes.patch("/audits/:id", requireUser, async (c) => {
     return c.json({ error: "The due date must be on or after the start date." }, 400);
   }
 
-  const leadUserId = parsed.data.leadUserId === undefined ? current.lead?.id ?? null : parsed.data.leadUserId;
+  if (parsed.data.projectTypeId && !(await projectTypeExists(db, parsed.data.projectTypeId))) {
+    return c.json({ error: "Project type not found." }, 404);
+  }
+
+  const leadUserId = parsed.data.leadUserId === undefined ? (current.lead?.id ?? null) : parsed.data.leadUserId;
 
   if (leadUserId && !(await userExists(db, leadUserId))) {
     return c.json({ error: "Lead not found." }, 404);
@@ -208,10 +219,11 @@ auditRoutes.patch("/audits/:id", requireUser, async (c) => {
 
   await db.transaction(async (tx) => {
     await tx
-      .update(audits)
+      .update(projects)
       .set({
         title: parsed.data.title ?? current.title,
         projectReference: parsed.data.projectReference ?? current.projectReference,
+        projectTypeId: parsed.data.projectTypeId ?? current.projectTypeId,
         status: parsed.data.status ?? current.status,
         description: parsed.data.description === undefined ? current.description : blankToNull(parsed.data.description),
         startDate,
@@ -219,118 +231,130 @@ auditRoutes.patch("/audits/:id", requireUser, async (c) => {
         leadUserId,
         updatedAt: new Date(),
       })
-      .where(eq(audits.id, id));
+      .where(eq(projects.id, id));
 
     if (linkedAssetIds) {
-      await tx.delete(auditAssets).where(eq(auditAssets.auditId, id));
+      await tx.delete(projectAssets).where(eq(projectAssets.projectId, id));
 
       if (linkedAssetIds.length > 0) {
-        await tx.insert(auditAssets).values(linkedAssetIds.map((assetId) => ({ auditId: id, assetId })));
+        await tx.insert(projectAssets).values(linkedAssetIds.map((assetId) => ({ projectId: id, assetId })));
       }
     }
   });
 
-  return c.json({ audit: await loadAudit(db, c.get("user"), id) });
+  return c.json({ project: await loadProject(db, c.get("user"), id) });
 });
 
-auditRoutes.delete("/audits/:id", requireUser, async (c) => {
+projectRoutes.delete("/projects/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
   if (!id) {
-    return c.json({ error: "Audit not found." }, 404);
+    return c.json({ error: "Project not found." }, 404);
   }
 
   const db = c.get("services").db;
-  const current = await loadAudit(db, c.get("user"), id);
+  const current = await loadProject(db, c.get("user"), id);
 
   if (!current) {
-    return c.json({ error: "Audit not found." }, 404);
+    return c.json({ error: "Project not found." }, 404);
   }
 
-  await db.delete(audits).where(eq(audits.id, id));
+  await db.delete(projects).where(eq(projects.id, id));
   return c.json({ ok: true });
 });
 
-async function auditsForClient(db: Database, clientId: string) {
-  const rows = await auditQuery(db).where(eq(audits.clientId, clientId)).orderBy(sql`${audits.dueDate} ASC NULLS LAST`, asc(audits.title));
-  return presentAudits(db, rows);
+async function projectsForClient(db: Database, clientId: string) {
+  const rows = await projectQuery(db)
+    .where(eq(projects.clientId, clientId))
+    .orderBy(sql`${projects.dueDate} ASC NULLS LAST`, asc(projects.title));
+  return presentProjects(db, rows);
 }
 
-async function loadAudit(db: Database, user: AuthUser, id: string) {
-  const [row] = await auditQuery(db).where(eq(audits.id, id)).limit(1);
+async function loadProject(db: Database, user: AuthUser, id: string) {
+  const [row] = await projectQuery(db).where(eq(projects.id, id)).limit(1);
 
   if (!row || !(await clientIsVisible(db, user, row.clientId))) {
     return null;
   }
 
-  const [audit] = await presentAudits(db, [row]);
-  return audit ?? null;
+  const [project] = await presentProjects(db, [row]);
+  return project ?? null;
 }
 
-function auditQuery(db: Database) {
+function projectQuery(db: Database) {
   return db
     .select({
-      id: audits.id,
-      clientId: audits.clientId,
+      id: projects.id,
+      clientId: projects.clientId,
       clientName: clients.name,
-      leadUserId: audits.leadUserId,
+      projectTypeId: projects.projectTypeId,
+      projectTypeCode: projectTypes.code,
+      projectTypeName: projectTypes.name,
+      leadUserId: projects.leadUserId,
       leadEmail: users.email,
       leadName: users.name,
-      title: audits.title,
-      projectReference: audits.projectReference,
-      status: audits.status,
-      description: audits.description,
-      startDate: audits.startDate,
-      dueDate: audits.dueDate,
-      createdAt: audits.createdAt,
-      updatedAt: audits.updatedAt,
+      title: projects.title,
+      projectReference: projects.projectReference,
+      status: projects.status,
+      description: projects.description,
+      startDate: projects.startDate,
+      dueDate: projects.dueDate,
+      createdAt: projects.createdAt,
+      updatedAt: projects.updatedAt,
     })
-    .from(audits)
-    .innerJoin(clients, eq(audits.clientId, clients.id))
-    .leftJoin(users, eq(audits.leadUserId, users.id));
+    .from(projects)
+    .innerJoin(clients, eq(projects.clientId, clients.id))
+    .innerJoin(projectTypes, eq(projects.projectTypeId, projectTypes.id))
+    .leftJoin(users, eq(projects.leadUserId, users.id));
 }
 
-async function presentAudits(db: Database, rows: AuditRow[]) {
+async function presentProjects(db: Database, rows: ProjectRow[]) {
   const ids = rows.map((row) => row.id);
   const links =
     ids.length === 0
       ? []
       : await db
           .select({
-            auditId: auditAssets.auditId,
+            projectId: projectAssets.projectId,
             id: assets.id,
             assetRef: assets.assetRef,
             assetName: assets.assetName,
             locationId: assets.locationId,
           })
-          .from(auditAssets)
-          .innerJoin(assets, eq(auditAssets.assetId, assets.id))
-          .where(inArray(auditAssets.auditId, ids))
+          .from(projectAssets)
+          .innerJoin(assets, eq(projectAssets.assetId, assets.id))
+          .where(inArray(projectAssets.projectId, ids))
           .orderBy(asc(assets.assetRef), asc(assets.assetName));
-  const assetsByAudit = new Map<string, AuditAsset[]>();
+  const assetsByProject = new Map<string, ProjectAsset[]>();
 
   for (const link of links) {
-    const list = assetsByAudit.get(link.auditId) ?? [];
+    const list = assetsByProject.get(link.projectId) ?? [];
     list.push({
       id: link.id,
       assetRef: link.assetRef,
       assetName: link.assetName,
       locationId: link.locationId,
     });
-    assetsByAudit.set(link.auditId, list);
+    assetsByProject.set(link.projectId, list);
   }
 
   return rows.map((row) => ({
     id: row.id,
     title: row.title,
     projectReference: row.projectReference,
+    projectTypeId: row.projectTypeId,
+    projectType: {
+      id: row.projectTypeId,
+      code: row.projectTypeCode,
+      name: row.projectTypeName,
+    },
     status: row.status,
     description: row.description,
     startDate: row.startDate,
     dueDate: row.dueDate,
     lead: row.leadUserId && row.leadEmail ? { id: row.leadUserId, email: row.leadEmail, name: row.leadName } : null,
     client: { id: row.clientId, name: row.clientName },
-    assets: assetsByAudit.get(row.id) ?? [],
+    assets: assetsByProject.get(row.id) ?? [],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }));
@@ -344,6 +368,11 @@ async function visibleClient(db: Database, user: AuthUser, clientId: string) {
   }
 
   return client;
+}
+
+async function projectTypeExists(db: Database, id: string) {
+  const [row] = await db.select({ id: projectTypes.id }).from(projectTypes).where(eq(projectTypes.id, id)).limit(1);
+  return Boolean(row);
 }
 
 async function userExists(db: Database, id: string) {
@@ -368,10 +397,13 @@ async function assetsOnClient(db: Database, clientId: string, ids: string[]) {
   return rows.length === unique.length ? unique : null;
 }
 
-type AuditRow = {
+type ProjectRow = {
   id: string;
   clientId: string;
   clientName: string;
+  projectTypeId: string;
+  projectTypeCode: string;
+  projectTypeName: string;
   leadUserId: string | null;
   leadEmail: string | null;
   leadName: string | null;
@@ -385,7 +417,7 @@ type AuditRow = {
   updatedAt: Date;
 };
 
-type AuditAsset = {
+type ProjectAsset = {
   id: string;
   assetRef: string;
   assetName: string | null;

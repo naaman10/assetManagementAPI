@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { PROJECT_TYPES_CREATE, PROJECT_TYPES_DELETE, PROJECT_TYPES_EDIT, PROJECT_TYPES_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { projectTypes } from "../db/schema/index.js";
+import { projectTypes, projects } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
@@ -143,8 +143,26 @@ projectTypeRoutes.delete("/project-types/:id", requirePermission(PROJECT_TYPES_D
     return c.json({ error: "Project type not found." }, 404);
   }
 
-  await db.delete(projectTypes).where(eq(projectTypes.id, id));
-  return c.json({ ok: true });
+  const [usedByProject] = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.projectTypeId, id))
+    .limit(1);
+
+  if (usedByProject) {
+    return c.json({ error: "This project type is still used by projects." }, 409);
+  }
+
+  try {
+    await db.delete(projectTypes).where(eq(projectTypes.id, id));
+    return c.json({ ok: true });
+  } catch (error) {
+    if (isForeignKeyViolation(error)) {
+      return c.json({ error: "This project type is still in use." }, 409);
+    }
+
+    throw error;
+  }
 });
 
 async function loadProjectType(db: Database, id: string) {
@@ -177,4 +195,20 @@ function blankToNull(value: string | null | undefined) {
 
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+function isForeignKeyViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  if ("code" in error && error.code === "23503") {
+    return true;
+  }
+
+  if ("cause" in error) {
+    return isForeignKeyViolation(error.cause);
+  }
+
+  return false;
 }
