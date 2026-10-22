@@ -7,7 +7,7 @@ export { clientContacts } from "./clientContacts.js";
 export { clientMembers } from "./clientMembers.js";
 export { clientSettings } from "./clientSettings.js";
 export { clients } from "./clients.js";
-export { locations } from "./locations.js";
+export { LOCATION_STATUSES, LOCATION_TYPES, locations } from "./locations.js";
 export { maintenanceHistory } from "./maintenanceHistory.js";
 export { maintenanceHistoryPhotos } from "./maintenanceHistoryPhotos.js";
 export { maintenanceTypes } from "./maintenanceTypes.js";

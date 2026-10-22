@@ -176,6 +176,13 @@
       "when": 1792910000000,
       "tag": "0024_asset_ref_to_tag",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792990000000,
+      "tag": "0025_location_hierarchy",
+      "breakpoints": true
     }
   ]
 }

@@ -34,7 +34,7 @@ export const assets = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     locationId: uuid("location_id")
       .notNull()
-      .references(() => locations.id, { onDelete: "cascade" }),
+      .references(() => locations.id, { onDelete: "restrict" }),
     assetTypeId: uuid("asset_type_id")
       .notNull()
       .references(() => assetTypes.id, { onDelete: "restrict" }),

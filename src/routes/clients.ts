@@ -1,11 +1,11 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility, isAdmin } from "../auth/clientAccess.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
 import { CLIENTS_CREATE, CLIENTS_DELETE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { clientContacts, clientMembers, clientSettings, clients, sites, users } from "../db/schema/index.js";
+import { assets, clientContacts, clientMembers, clientSettings, clients, locations, sites, users } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv } from "../types.js";
@@ -285,6 +285,24 @@ clientRoutes.delete("/clients/:id", requirePermission(CLIENTS_DELETE), async (c)
     await removeHistoryPhotos(db, storage, { clientId: id });
 
     await db.transaction(async (tx) => {
+      const clientSites = await tx.select({ id: sites.id }).from(sites).where(eq(sites.clientId, id));
+      const siteIds = clientSites.map((site) => site.id);
+
+      if (siteIds.length > 0) {
+        const clientLocations = await tx
+          .select({ id: locations.id })
+          .from(locations)
+          .where(inArray(locations.siteId, siteIds));
+        const locationIds = clientLocations.map((location) => location.id);
+
+        if (locationIds.length > 0) {
+          await tx.delete(assets).where(inArray(assets.locationId, locationIds));
+          // Clear self-references so RESTRICT parent FKs do not block site teardown.
+          await tx.update(locations).set({ parentLocationId: null }).where(inArray(locations.id, locationIds));
+          await tx.delete(locations).where(inArray(locations.id, locationIds));
+        }
+      }
+
       await tx.delete(sites).where(eq(sites.clientId, id));
       await tx.delete(clients).where(eq(clients.id, id));
     });
