@@ -1,7 +1,7 @@
 export { ASSET_STATUSES, assets } from "./assets.js";
 export { PROJECT_STATUSES, projectAssets, projects } from "./projects.js";
 export { assetTypes } from "./assetTypes.js";
-export { bcisRefs, bcisSubRefs, elements, groups, subElements } from "./classifications.js";
+export { elements, groups, subElements } from "./classifications.js";
 export { clientContacts } from "./clientContacts.js";
 export { clientMembers } from "./clientMembers.js";
 export { clientSettings } from "./clientSettings.js";

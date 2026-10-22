@@ -27,14 +27,6 @@ export const SUB_ELEMENTS_VIEW = "subElement:view";
 export const SUB_ELEMENTS_CREATE = "subElement:create";
 export const SUB_ELEMENTS_EDIT = "subElement:edit";
 export const SUB_ELEMENTS_DELETE = "subElement:delete";
-export const BCIS_REFS_VIEW = "bcisRef:view";
-export const BCIS_REFS_CREATE = "bcisRef:create";
-export const BCIS_REFS_EDIT = "bcisRef:edit";
-export const BCIS_REFS_DELETE = "bcisRef:delete";
-export const BCIS_SUB_REFS_VIEW = "bcisSubRef:view";
-export const BCIS_SUB_REFS_CREATE = "bcisSubRef:create";
-export const BCIS_SUB_REFS_EDIT = "bcisSubRef:edit";
-export const BCIS_SUB_REFS_DELETE = "bcisSubRef:delete";
 export const MAINTENANCE_TYPES_VIEW = "maintenanceTypes:view";
 export const MAINTENANCE_TYPES_CREATE = "maintenanceTypes:create";
 export const MAINTENANCE_TYPES_EDIT = "maintenanceTypes:edit";
@@ -75,14 +67,6 @@ export const SEEDED_PERMISSIONS = [
   { name: SUB_ELEMENTS_CREATE, description: "Create sub elements." },
   { name: SUB_ELEMENTS_EDIT, description: "Update sub elements." },
   { name: SUB_ELEMENTS_DELETE, description: "Delete sub elements." },
-  { name: BCIS_REFS_VIEW, description: "List and read BCIS references." },
-  { name: BCIS_REFS_CREATE, description: "Create BCIS references." },
-  { name: BCIS_REFS_EDIT, description: "Update BCIS references." },
-  { name: BCIS_REFS_DELETE, description: "Delete BCIS references." },
-  { name: BCIS_SUB_REFS_VIEW, description: "List and read BCIS sub references." },
-  { name: BCIS_SUB_REFS_CREATE, description: "Create BCIS sub references." },
-  { name: BCIS_SUB_REFS_EDIT, description: "Update BCIS sub references." },
-  { name: BCIS_SUB_REFS_DELETE, description: "Delete BCIS sub references." },
   { name: MAINTENANCE_TYPES_VIEW, description: "List and read maintenance types." },
   { name: MAINTENANCE_TYPES_CREATE, description: "Create maintenance types." },
   { name: MAINTENANCE_TYPES_EDIT, description: "Update maintenance types." },

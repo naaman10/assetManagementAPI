@@ -3,14 +3,6 @@ import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
-  BCIS_REFS_CREATE,
-  BCIS_REFS_DELETE,
-  BCIS_REFS_EDIT,
-  BCIS_REFS_VIEW,
-  BCIS_SUB_REFS_CREATE,
-  BCIS_SUB_REFS_DELETE,
-  BCIS_SUB_REFS_EDIT,
-  BCIS_SUB_REFS_VIEW,
   ELEMENTS_CREATE,
   ELEMENTS_DELETE,
   ELEMENTS_EDIT,
@@ -25,7 +17,7 @@ import {
   SUB_ELEMENTS_VIEW,
 } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { assets, bcisRefs, bcisSubRefs, elements, groups, subElements } from "../db/schema/index.js";
+import { assets, elements, groups, subElements } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
@@ -111,50 +103,6 @@ mountCatalog(classificationRoutes, {
   ],
 });
 
-mountCatalog(classificationRoutes, {
-  path: "/bcis-refs",
-  listKey: "bcisRefs",
-  recordKey: "bcisRef",
-  notFound: "BCIS reference not found.",
-  permissions: { view: BCIS_REFS_VIEW, create: BCIS_REFS_CREATE, edit: BCIS_REFS_EDIT, remove: BCIS_REFS_DELETE },
-  table: bcisRefs,
-  blockers: [
-    {
-      message: "This BCIS reference has sub references.",
-      exists: (db, id) => referenced(db, bcisSubRefs, bcisSubRefs.bcisRefId, id),
-    },
-    {
-      message: "This BCIS reference is still used by assets.",
-      exists: (db, id) => referenced(db, assets, assets.bcisRefId, id),
-    },
-  ],
-});
-
-mountCatalog(classificationRoutes, {
-  path: "/bcis-sub-refs",
-  listKey: "bcisSubRefs",
-  recordKey: "bcisSubRef",
-  notFound: "BCIS sub reference not found.",
-  parentKey: "bcisRefId",
-  parentMissing: "BCIS reference not found.",
-  parentInUse: "This BCIS sub reference is still used by assets.",
-  permissions: {
-    view: BCIS_SUB_REFS_VIEW,
-    create: BCIS_SUB_REFS_CREATE,
-    edit: BCIS_SUB_REFS_EDIT,
-    remove: BCIS_SUB_REFS_DELETE,
-  },
-  table: bcisSubRefs,
-  parentTable: bcisRefs,
-  assetColumn: assets.bcisSubRefId,
-  blockers: [
-    {
-      message: "This BCIS sub reference is still used by assets.",
-      exists: (db, id) => referenced(db, assets, assets.bcisSubRefId, id),
-    },
-  ],
-});
-
 export { classificationRoutes };
 
 function mountCatalog(
@@ -164,7 +112,7 @@ function mountCatalog(
     listKey: string;
     recordKey: string;
     notFound: string;
-    parentKey?: "groupId" | "elementId" | "bcisRefId";
+    parentKey?: "groupId" | "elementId";
     parentMissing?: string;
     parentInUse?: string;
     permissions: { view: string; create: string; edit: string; remove: string };
@@ -322,7 +270,7 @@ function mountCatalog(
   });
 }
 
-async function listRows(db: Database, table: PgTable, parentKey?: "groupId" | "elementId" | "bcisRefId"): Promise<CatalogRow[]> {
+async function listRows(db: Database, table: PgTable, parentKey?: "groupId" | "elementId"): Promise<CatalogRow[]> {
   const rows = await db.select().from(table).orderBy(asc(codeColumn(table)));
   return rows.map((row) => readRow(row, parentKey));
 }
@@ -331,7 +279,7 @@ async function findRow(
   db: Database,
   table: PgTable,
   id: string,
-  parentKey?: "groupId" | "elementId" | "bcisRefId",
+  parentKey?: "groupId" | "elementId",
 ): Promise<CatalogRow | null> {
   const [row] = await db.select().from(table).where(eq(idColumn(table), id)).limit(1);
   return row ? readRow(row, parentKey) : null;
@@ -340,7 +288,7 @@ async function findRow(
 async function insertRow(
   db: Database,
   table: PgTable,
-  parentKey: "groupId" | "elementId" | "bcisRefId" | undefined,
+  parentKey: "groupId" | "elementId" | undefined,
   input: CatalogInput,
 ): Promise<CatalogRow> {
   const values: Record<string, unknown> = {
@@ -367,7 +315,7 @@ async function updateRow(
   db: Database,
   table: PgTable,
   id: string,
-  parentKey: "groupId" | "elementId" | "bcisRefId" | undefined,
+  parentKey: "groupId" | "elementId" | undefined,
   input: CatalogInput,
 ) {
   const values: Record<string, unknown> = {
@@ -399,7 +347,7 @@ async function referenced(db: Database, table: PgTable, column: PgColumn, id: st
   return Boolean(row);
 }
 
-function presentCatalog(row: CatalogRow, parentKey?: "groupId" | "elementId" | "bcisRefId") {
+function presentCatalog(row: CatalogRow, parentKey?: "groupId" | "elementId") {
   return {
     id: row.id,
     ...(parentKey ? { [parentKey]: row.parentId ?? null } : {}),
@@ -412,7 +360,7 @@ function presentCatalog(row: CatalogRow, parentKey?: "groupId" | "elementId" | "
   };
 }
 
-function readRow(row: object, parentKey?: "groupId" | "elementId" | "bcisRefId"): CatalogRow {
+function readRow(row: object, parentKey?: "groupId" | "elementId"): CatalogRow {
   const record = row as Record<string, unknown>;
   const parentId = parentKey ? record[parentKey] : undefined;
 
@@ -447,7 +395,7 @@ function column(table: PgTable, name: string) {
   return field;
 }
 
-function parentValue(value: object, key: "groupId" | "elementId" | "bcisRefId") {
+function parentValue(value: object, key: "groupId" | "elementId") {
   const parentId = (value as Record<string, unknown>)[key];
   return typeof parentId === "string" ? parentId : undefined;
 }

@@ -54,32 +54,3 @@ export const subElements = pgTable(
   },
   (table) => [uniqueIndex("sub_elements_code_unique").on(table.code), index("sub_elements_element_id_idx").on(table.elementId)],
 );
-
-export const bcisRefs = pgTable(
-  "bcis_refs",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    code: code("code").notNull(),
-    name: label("name").notNull(),
-    description: text("description"),
-    isActive: boolean("is_active").notNull().default(true),
-    ...timestamps(),
-  },
-  (table) => [uniqueIndex("bcis_refs_code_unique").on(table.code)],
-);
-
-export const bcisSubRefs = pgTable(
-  "bcis_sub_refs",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    bcisRefId: uuid("bcis_ref_id")
-      .notNull()
-      .references(() => bcisRefs.id, { onDelete: "restrict" }),
-    code: code("code").notNull(),
-    name: label("name").notNull(),
-    description: text("description"),
-    isActive: boolean("is_active").notNull().default(true),
-    ...timestamps(),
-  },
-  (table) => [uniqueIndex("bcis_sub_refs_code_unique").on(table.code), index("bcis_sub_refs_bcis_ref_id_idx").on(table.bcisRefId)],
-);
