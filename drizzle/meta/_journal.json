@@ -155,6 +155,13 @@
       "when": 1792670000000,
       "tag": "0021_nrm3_classifications",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792750000000,
+      "tag": "0022_asset_identity_fields",
+      "breakpoints": true
     }
   ]
 }

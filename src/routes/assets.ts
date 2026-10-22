@@ -1,4 +1,5 @@
 import { asc, eq } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
@@ -20,9 +21,12 @@ import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
 
+const parentAssets = alias(assets, "parent_assets");
+
 const assetRef = z.string().trim().min(1).max(100);
 const optionalText = (max: number) => z.string().trim().max(max).nullable().optional();
 const years = z.number().int().min(0).max(2_147_483_647).nullable().optional();
+const yearOfManufacture = z.number().int().min(1000).max(9999).nullable().optional();
 const quantity = z
   .number()
   .finite()
@@ -50,6 +54,11 @@ const createAssetSchema = z.object({
   assetRef,
   assetName: optionalText(5000),
   description: optionalText(5000),
+  manufacturer: optionalText(5000),
+  model: optionalText(150),
+  serialNumber: optionalText(150),
+  yearOfManufacture,
+  tag: optionalText(150),
   quantity,
   unitOfMeasure: optionalText(30),
   installationDate,
@@ -60,6 +69,7 @@ const createAssetSchema = z.object({
   elementId: optionalId,
   subElementId: optionalId,
   nrm3Code: optionalNrm3Code,
+  parentAssetId: optionalId,
 });
 
 const updateAssetSchema = z
@@ -68,6 +78,11 @@ const updateAssetSchema = z
     assetRef: assetRef.optional(),
     assetName: optionalText(5000),
     description: optionalText(5000),
+    manufacturer: optionalText(5000),
+    model: optionalText(150),
+    serialNumber: optionalText(150),
+    yearOfManufacture,
+    tag: optionalText(150),
     quantity,
     unitOfMeasure: optionalText(30),
     installationDate,
@@ -78,6 +93,7 @@ const updateAssetSchema = z
     elementId: optionalId,
     subElementId: optionalId,
     nrm3Code: optionalNrm3Code,
+    parentAssetId: optionalId,
   })
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
     message: "No changes were provided.",
@@ -151,15 +167,31 @@ assetRoutes.post("/locations/:id/assets", requireUser, async (c) => {
     return c.json({ error: classification.error }, classification.status);
   }
 
+  const parentAssetId = parsed.data.parentAssetId ?? null;
+  const parent = await resolveParentAsset(db, c.get("user"), parentAssetId, {
+    assetId: null,
+    clientId: location.clientId,
+  });
+
+  if ("error" in parent) {
+    return c.json({ error: parent.error }, parent.status);
+  }
+
   const [created] = await db
     .insert(assets)
     .values({
       locationId,
       assetTypeId: parsed.data.assetTypeId,
       ...classification,
+      parentAssetId: parent.parentAssetId,
       assetRef: parsed.data.assetRef,
       assetName: blankToNull(parsed.data.assetName),
       description: blankToNull(parsed.data.description),
+      manufacturer: blankToNull(parsed.data.manufacturer),
+      model: blankToNull(parsed.data.model),
+      serialNumber: blankToNull(parsed.data.serialNumber),
+      yearOfManufacture: parsed.data.yearOfManufacture ?? null,
+      tag: blankToNull(parsed.data.tag),
       quantity: parsed.data.quantity ?? null,
       unitOfMeasure: blankToNull(parsed.data.unitOfMeasure),
       installationDate: blankToNull(parsed.data.installationDate),
@@ -228,14 +260,32 @@ assetRoutes.patch("/assets/:id", requireUser, async (c) => {
     return c.json({ error: classification.error }, classification.status);
   }
 
+  const parentAssetId =
+    parsed.data.parentAssetId === undefined ? current.parentAssetId : parsed.data.parentAssetId;
+  const parent = await resolveParentAsset(db, c.get("user"), parentAssetId, {
+    assetId: id,
+    clientId: current.client.id,
+  });
+
+  if ("error" in parent) {
+    return c.json({ error: parent.error }, parent.status);
+  }
+
   await db
     .update(assets)
     .set({
       assetTypeId: parsed.data.assetTypeId ?? current.assetTypeId,
       ...classification,
+      parentAssetId: parent.parentAssetId,
       assetRef: parsed.data.assetRef ?? current.assetRef,
       assetName: parsed.data.assetName === undefined ? current.assetName : blankToNull(parsed.data.assetName),
       description: parsed.data.description === undefined ? current.description : blankToNull(parsed.data.description),
+      manufacturer: parsed.data.manufacturer === undefined ? current.manufacturer : blankToNull(parsed.data.manufacturer),
+      model: parsed.data.model === undefined ? current.model : blankToNull(parsed.data.model),
+      serialNumber: parsed.data.serialNumber === undefined ? current.serialNumber : blankToNull(parsed.data.serialNumber),
+      yearOfManufacture:
+        parsed.data.yearOfManufacture === undefined ? current.yearOfManufacture : parsed.data.yearOfManufacture,
+      tag: parsed.data.tag === undefined ? current.tag : blankToNull(parsed.data.tag),
       quantity: parsed.data.quantity === undefined ? current.quantity : parsed.data.quantity,
       unitOfMeasure: parsed.data.unitOfMeasure === undefined ? current.unitOfMeasure : blankToNull(parsed.data.unitOfMeasure),
       installationDate:
@@ -281,6 +331,11 @@ const assetListColumns = {
   assetRef: assets.assetRef,
   assetName: assets.assetName,
   description: assets.description,
+  manufacturer: assets.manufacturer,
+  model: assets.model,
+  serialNumber: assets.serialNumber,
+  yearOfManufacture: assets.yearOfManufacture,
+  tag: assets.tag,
   quantity: assets.quantity,
   unitOfMeasure: assets.unitOfMeasure,
   installationDate: assets.installationDate,
@@ -293,6 +348,7 @@ const assetListColumns = {
   elementId: assets.elementId,
   subElementId: assets.subElementId,
   nrm3Code: assets.nrm3Code,
+  parentAssetId: assets.parentAssetId,
   siteId: locations.siteId,
   locationCode: locations.locationCode,
   locationName: locations.name,
@@ -308,6 +364,8 @@ const assetListColumns = {
   subElementName: subElements.name,
   nrm3Name: nrm3Classifications.name,
   nrm3Level: nrm3Classifications.level,
+  parentAssetRef: parentAssets.assetRef,
+  parentAssetName: parentAssets.assetName,
 };
 
 function assetListQuery(db: Database) {
@@ -321,7 +379,8 @@ function assetListQuery(db: Database) {
     .leftJoin(groups, eq(assets.groupId, groups.id))
     .leftJoin(elements, eq(assets.elementId, elements.id))
     .leftJoin(subElements, eq(assets.subElementId, subElements.id))
-    .leftJoin(nrm3Classifications, eq(assets.nrm3Code, nrm3Classifications.code));
+    .leftJoin(nrm3Classifications, eq(assets.nrm3Code, nrm3Classifications.code))
+    .leftJoin(parentAssets, eq(assets.parentAssetId, parentAssets.id));
 }
 
 async function assetsForLocation(db: Database, locationId: string) {
@@ -384,6 +443,77 @@ async function loadAsset(db: Database, user: AuthUser, id: string) {
 async function assetTypeExists(db: Database, id: string) {
   const [row] = await db.select({ id: assetTypes.id }).from(assetTypes).where(eq(assetTypes.id, id)).limit(1);
   return Boolean(row);
+}
+
+async function resolveParentAsset(
+  db: Database,
+  user: AuthUser,
+  parentAssetId: string | null,
+  context: { assetId: string | null; clientId: string },
+) {
+  if (!parentAssetId) {
+    return { parentAssetId: null };
+  }
+
+  if (context.assetId && parentAssetId === context.assetId) {
+    return { status: 400 as const, error: "An asset cannot be its own parent." };
+  }
+
+  const [parent] = await db
+    .select({
+      id: assets.id,
+      clientId: sites.clientId,
+    })
+    .from(assets)
+    .innerJoin(locations, eq(assets.locationId, locations.id))
+    .innerJoin(sites, eq(sites.id, locations.siteId))
+    .where(eq(assets.id, parentAssetId))
+    .limit(1);
+
+  if (!parent || !(await clientIsVisible(db, user, parent.clientId))) {
+    return { status: 404 as const, error: "Parent asset not found." };
+  }
+
+  if (parent.clientId !== context.clientId) {
+    return { status: 400 as const, error: "Parent asset must belong to the same client." };
+  }
+
+  if (context.assetId) {
+    const cycle = await parentWouldCycle(db, context.assetId, parentAssetId);
+
+    if (cycle) {
+      return { status: 400 as const, error: "Parent asset would create a cycle." };
+    }
+  }
+
+  return { parentAssetId };
+}
+
+async function parentWouldCycle(db: Database, assetId: string, parentAssetId: string) {
+  let current: string | null = parentAssetId;
+  const seen = new Set<string>();
+
+  while (current) {
+    if (current === assetId) {
+      return true;
+    }
+
+    if (seen.has(current)) {
+      return true;
+    }
+
+    seen.add(current);
+
+    const [row] = await db
+      .select({ parentAssetId: assets.parentAssetId })
+      .from(assets)
+      .where(eq(assets.id, current))
+      .limit(1);
+
+    current = row?.parentAssetId ?? null;
+  }
+
+  return false;
 }
 
 async function classificationForAsset(
@@ -476,6 +606,11 @@ function presentAsset(asset: {
   assetRef: string;
   assetName: string | null;
   description: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  serialNumber: string | null;
+  yearOfManufacture: number | null;
+  tag: string | null;
   quantity: number | null;
   unitOfMeasure: string | null;
   installationDate: string | null;
@@ -495,6 +630,7 @@ function presentAsset(asset: {
   elementId: string | null;
   subElementId: string | null;
   nrm3Code: string | null;
+  parentAssetId: string | null;
   groupCode: string | null;
   groupName: string | null;
   elementCode: string | null;
@@ -503,6 +639,8 @@ function presentAsset(asset: {
   subElementName: string | null;
   nrm3Name: string | null;
   nrm3Level: number | null;
+  parentAssetRef: string | null;
+  parentAssetName: string | null;
 }) {
   return {
     id: asset.id,
@@ -531,9 +669,16 @@ function presentAsset(asset: {
     subElement: catalogRef(asset.subElementId, asset.subElementCode, asset.subElementName),
     nrm3Code: asset.nrm3Code,
     nrm3Classification: nrm3Ref(asset.nrm3Code, asset.nrm3Name, asset.nrm3Level),
+    parentAssetId: asset.parentAssetId,
+    parentAsset: parentAssetRef(asset.parentAssetId, asset.parentAssetRef, asset.parentAssetName),
     assetRef: asset.assetRef,
     assetName: asset.assetName,
     description: asset.description,
+    manufacturer: asset.manufacturer,
+    model: asset.model,
+    serialNumber: asset.serialNumber,
+    yearOfManufacture: asset.yearOfManufacture,
+    tag: asset.tag,
     quantity: asset.quantity,
     unitOfMeasure: asset.unitOfMeasure,
     installationDate: asset.installationDate,
@@ -559,6 +704,14 @@ function nrm3Ref(code: string | null, name: string | null, level: number | null)
   }
 
   return { code, name, level };
+}
+
+function parentAssetRef(id: string | null, assetRef: string | null, assetName: string | null) {
+  if (!id || !assetRef) {
+    return null;
+  }
+
+  return { id, assetRef, assetName };
 }
 
 function parseId(value: string) {
