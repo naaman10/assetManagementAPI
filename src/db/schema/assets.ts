@@ -1,8 +1,10 @@
 import { sql } from "drizzle-orm";
 import { check, date, index, integer, numeric, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
+
 import { assetTypes } from "./assetTypes.js";
 import { elements, groups, subElements } from "./classifications.js";
 import { locations } from "./locations.js";
+import { nrm3Classifications } from "./nrm3Classifications.js";
 
 export const ASSET_STATUSES = [
   "active",
@@ -29,6 +31,7 @@ export const assets = pgTable(
     groupId: uuid("group_id").references(() => groups.id, { onDelete: "restrict" }),
     elementId: uuid("element_id").references(() => elements.id, { onDelete: "restrict" }),
     subElementId: uuid("sub_element_id").references(() => subElements.id, { onDelete: "restrict" }),
+    nrm3Code: text("nrm3_code").references(() => nrm3Classifications.code, { onDelete: "restrict" }),
     assetRef: varchar("asset_ref", { length: 100 }).notNull(),
     assetName: text("asset_name"),
     description: text("description"),
@@ -51,6 +54,7 @@ export const assets = pgTable(
     index("assets_group_id_idx").on(table.groupId),
     index("assets_element_id_idx").on(table.elementId),
     index("assets_sub_element_id_idx").on(table.subElementId),
+    index("assets_nrm3_code_idx").on(table.nrm3Code),
     check(
       "assets_status_check",
       sql`${table.status} IN ('active', 'inactive', 'out_of_service', 'decommissioned', 'disposed', 'proposed', 'under_installation', 'awaiting_commissioning', 'deleted')`,

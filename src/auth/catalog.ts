@@ -27,6 +27,10 @@ export const SUB_ELEMENTS_VIEW = "subElement:view";
 export const SUB_ELEMENTS_CREATE = "subElement:create";
 export const SUB_ELEMENTS_EDIT = "subElement:edit";
 export const SUB_ELEMENTS_DELETE = "subElement:delete";
+export const NRM3_CLASSIFICATIONS_VIEW = "nrm3Classification:view";
+export const NRM3_CLASSIFICATIONS_CREATE = "nrm3Classification:create";
+export const NRM3_CLASSIFICATIONS_EDIT = "nrm3Classification:edit";
+export const NRM3_CLASSIFICATIONS_DELETE = "nrm3Classification:delete";
 export const MAINTENANCE_TYPES_VIEW = "maintenanceTypes:view";
 export const MAINTENANCE_TYPES_CREATE = "maintenanceTypes:create";
 export const MAINTENANCE_TYPES_EDIT = "maintenanceTypes:edit";
@@ -67,6 +71,10 @@ export const SEEDED_PERMISSIONS = [
   { name: SUB_ELEMENTS_CREATE, description: "Create sub elements." },
   { name: SUB_ELEMENTS_EDIT, description: "Update sub elements." },
   { name: SUB_ELEMENTS_DELETE, description: "Delete sub elements." },
+  { name: NRM3_CLASSIFICATIONS_VIEW, description: "List and read NRM3 classifications." },
+  { name: NRM3_CLASSIFICATIONS_CREATE, description: "Create NRM3 classifications." },
+  { name: NRM3_CLASSIFICATIONS_EDIT, description: "Update NRM3 classifications." },
+  { name: NRM3_CLASSIFICATIONS_DELETE, description: "Delete NRM3 classifications." },
   { name: MAINTENANCE_TYPES_VIEW, description: "List and read maintenance types." },
   { name: MAINTENANCE_TYPES_CREATE, description: "Create maintenance types." },
   { name: MAINTENANCE_TYPES_EDIT, description: "Update maintenance types." },

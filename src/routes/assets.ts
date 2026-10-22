@@ -4,7 +4,18 @@ import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
-import { ASSET_STATUSES, assetTypes, assets, clients, elements, groups, locations, sites, subElements } from "../db/schema/index.js";
+import {
+  ASSET_STATUSES,
+  assetTypes,
+  assets,
+  clients,
+  elements,
+  groups,
+  locations,
+  nrm3Classifications,
+  sites,
+  subElements,
+} from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
@@ -32,6 +43,7 @@ const installationDate = z
   });
 
 const optionalId = z.uuid().nullable().optional();
+const optionalNrm3Code = z.string().trim().min(1).max(100).nullable().optional();
 
 const createAssetSchema = z.object({
   assetTypeId: z.uuid(),
@@ -47,6 +59,7 @@ const createAssetSchema = z.object({
   groupId: optionalId,
   elementId: optionalId,
   subElementId: optionalId,
+  nrm3Code: optionalNrm3Code,
 });
 
 const updateAssetSchema = z
@@ -64,6 +77,7 @@ const updateAssetSchema = z
     groupId: optionalId,
     elementId: optionalId,
     subElementId: optionalId,
+    nrm3Code: optionalNrm3Code,
   })
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
     message: "No changes were provided.",
@@ -278,6 +292,7 @@ const assetListColumns = {
   groupId: assets.groupId,
   elementId: assets.elementId,
   subElementId: assets.subElementId,
+  nrm3Code: assets.nrm3Code,
   siteId: locations.siteId,
   locationCode: locations.locationCode,
   locationName: locations.name,
@@ -291,6 +306,8 @@ const assetListColumns = {
   elementName: elements.name,
   subElementCode: subElements.code,
   subElementName: subElements.name,
+  nrm3Name: nrm3Classifications.name,
+  nrm3Level: nrm3Classifications.level,
 };
 
 function assetListQuery(db: Database) {
@@ -303,7 +320,8 @@ function assetListQuery(db: Database) {
     .innerJoin(assetTypes, eq(assets.assetTypeId, assetTypes.id))
     .leftJoin(groups, eq(assets.groupId, groups.id))
     .leftJoin(elements, eq(assets.elementId, elements.id))
-    .leftJoin(subElements, eq(assets.subElementId, subElements.id));
+    .leftJoin(subElements, eq(assets.subElementId, subElements.id))
+    .leftJoin(nrm3Classifications, eq(assets.nrm3Code, nrm3Classifications.code));
 }
 
 async function assetsForLocation(db: Database, locationId: string) {
@@ -374,16 +392,19 @@ async function classificationForAsset(
     groupId?: string | null;
     elementId?: string | null;
     subElementId?: string | null;
+    nrm3Code?: string | null;
   },
   current?: {
     groupId: string | null;
     elementId: string | null;
     subElementId: string | null;
+    nrm3Code: string | null;
   },
 ) {
   const groupId = chosenId(input.groupId, current?.groupId);
   const elementId = chosenId(input.elementId, current?.elementId);
   const subElementId = chosenId(input.subElementId, current?.subElementId);
+  const nrm3Code = chosenId(input.nrm3Code, current?.nrm3Code);
 
   if (groupId) {
     const [group] = await db.select({ id: groups.id }).from(groups).where(eq(groups.id, groupId)).limit(1);
@@ -429,7 +450,19 @@ async function classificationForAsset(
     }
   }
 
-  return { groupId, elementId, subElementId };
+  if (nrm3Code) {
+    const [nrm3] = await db
+      .select({ code: nrm3Classifications.code })
+      .from(nrm3Classifications)
+      .where(eq(nrm3Classifications.code, nrm3Code))
+      .limit(1);
+
+    if (!nrm3) {
+      return { status: 404 as const, error: "NRM3 classification not found." };
+    }
+  }
+
+  return { groupId, elementId, subElementId, nrm3Code };
 }
 
 function chosenId(next: string | null | undefined, previous: string | null | undefined) {
@@ -461,12 +494,15 @@ function presentAsset(asset: {
   groupId: string | null;
   elementId: string | null;
   subElementId: string | null;
+  nrm3Code: string | null;
   groupCode: string | null;
   groupName: string | null;
   elementCode: string | null;
   elementName: string | null;
   subElementCode: string | null;
   subElementName: string | null;
+  nrm3Name: string | null;
+  nrm3Level: number | null;
 }) {
   return {
     id: asset.id,
@@ -493,6 +529,8 @@ function presentAsset(asset: {
     element: catalogRef(asset.elementId, asset.elementCode, asset.elementName),
     subElementId: asset.subElementId,
     subElement: catalogRef(asset.subElementId, asset.subElementCode, asset.subElementName),
+    nrm3Code: asset.nrm3Code,
+    nrm3Classification: nrm3Ref(asset.nrm3Code, asset.nrm3Name, asset.nrm3Level),
     assetRef: asset.assetRef,
     assetName: asset.assetName,
     description: asset.description,
@@ -513,6 +551,14 @@ function catalogRef(id: string | null, code: string | null, name: string | null)
   }
 
   return { id, code, name };
+}
+
+function nrm3Ref(code: string | null, name: string | null, level: number | null) {
+  if (!code || !name || level == null) {
+    return null;
+  }
+
+  return { code, name, level };
 }
 
 function parseId(value: string) {

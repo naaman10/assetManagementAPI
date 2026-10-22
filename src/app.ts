@@ -12,6 +12,7 @@ import { locationRoutes } from "./routes/locations.js";
 import { maintenanceHistoryRoutes } from "./routes/maintenanceHistory.js";
 import { maintenanceScheduleRoutes } from "./routes/maintenanceSchedules.js";
 import { maintenanceTypeRoutes } from "./routes/maintenanceTypes.js";
+import { nrm3ClassificationRoutes } from "./routes/nrm3Classifications.js";
 import { projectTypeRoutes } from "./routes/projectTypes.js";
 import { searchRoutes } from "./routes/search.js";
 import { siteRoutes } from "./routes/sites.js";
@@ -50,6 +51,7 @@ export function createApp(services: Services) {
   app.route("/", projectRoutes);
   app.route("/", assetTypeRoutes);
   app.route("/", classificationRoutes);
+  app.route("/", nrm3ClassificationRoutes);
   app.route("/", maintenanceTypeRoutes);
   app.route("/", projectTypeRoutes);
   app.route("/", maintenanceScheduleRoutes);
