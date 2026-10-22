@@ -268,7 +268,7 @@ workOrderRoutes.delete("/work-orders/:id", requireUser, async (c) => {
 const workOrderColumns = {
   id: workOrders.id,
   assetId: workOrders.assetId,
-  assetRef: assets.assetRef,
+  tag: assets.tag,
   assetName: assets.assetName,
   locationId: locations.id,
   siteId: locations.siteId,
@@ -381,7 +381,7 @@ async function userExists(db: Database, id: string) {
 function presentWorkOrder(row: {
   id: string;
   assetId: string;
-  assetRef: string;
+  tag: string;
   assetName: string | null;
   locationId: string;
   siteId: string;
@@ -413,7 +413,7 @@ function presentWorkOrder(row: {
     assetId: row.assetId,
     asset: {
       id: row.assetId,
-      assetRef: row.assetRef,
+      tag: row.tag,
       assetName: row.assetName,
       locationId: row.locationId,
     },

@@ -317,21 +317,21 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
           .select({
             projectId: projectAssets.projectId,
             id: assets.id,
-            assetRef: assets.assetRef,
+            tag: assets.tag,
             assetName: assets.assetName,
             locationId: assets.locationId,
           })
           .from(projectAssets)
           .innerJoin(assets, eq(projectAssets.assetId, assets.id))
           .where(inArray(projectAssets.projectId, ids))
-          .orderBy(asc(assets.assetRef), asc(assets.assetName));
+          .orderBy(asc(assets.tag), asc(assets.assetName));
   const assetsByProject = new Map<string, ProjectAsset[]>();
 
   for (const link of links) {
     const list = assetsByProject.get(link.projectId) ?? [];
     list.push({
       id: link.id,
-      assetRef: link.assetRef,
+      tag: link.tag,
       assetName: link.assetName,
       locationId: link.locationId,
     });
@@ -419,7 +419,7 @@ type ProjectRow = {
 
 type ProjectAsset = {
   id: string;
-  assetRef: string;
+  tag: string;
   assetName: string | null;
   locationId: string;
 };

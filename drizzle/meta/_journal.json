@@ -169,6 +169,13 @@
       "when": 1792830000000,
       "tag": "0023_drop_asset_group_element",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792910000000,
+      "tag": "0024_asset_ref_to_tag",
+      "breakpoints": true
     }
   ]
 }

@@ -423,7 +423,7 @@ maintenanceHistoryRoutes.delete("/maintenance-history/:id/photos/:photoId", requ
 const historyColumns = {
   id: maintenanceHistory.id,
   assetId: maintenanceHistory.assetId,
-  assetRef: assets.assetRef,
+  tag: assets.tag,
   assetName: assets.assetName,
   locationId: locations.id,
   siteId: locations.siteId,
@@ -616,7 +616,7 @@ type HistoryPhoto = {
 function presentHistory(row: {
   id: string;
   assetId: string;
-  assetRef: string;
+  tag: string;
   assetName: string | null;
   locationId: string;
   siteId: string;
@@ -655,7 +655,7 @@ function presentHistory(row: {
     assetId: row.assetId,
     asset: {
       id: row.assetId,
-      assetRef: row.assetRef,
+      tag: row.tag,
       assetName: row.assetName,
       locationId: row.locationId,
     },

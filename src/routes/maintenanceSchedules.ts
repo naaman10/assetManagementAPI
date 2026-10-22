@@ -235,7 +235,7 @@ maintenanceScheduleRoutes.delete("/maintenance-schedules/:id", requireUser, asyn
 const scheduleColumns = {
   id: maintenanceSchedules.id,
   assetId: maintenanceSchedules.assetId,
-  assetRef: assets.assetRef,
+  tag: assets.tag,
   assetName: assets.assetName,
   locationId: locations.id,
   siteId: locations.siteId,
@@ -315,7 +315,7 @@ async function maintenanceTypeExists(db: Database, id: string) {
 function presentSchedule(row: {
   id: string;
   assetId: string;
-  assetRef: string;
+  tag: string;
   assetName: string | null;
   locationId: string;
   siteId: string;
@@ -346,7 +346,7 @@ function presentSchedule(row: {
     assetId: row.assetId,
     asset: {
       id: row.assetId,
-      assetRef: row.assetRef,
+      tag: row.tag,
       assetName: row.assetName,
       locationId: row.locationId,
     },

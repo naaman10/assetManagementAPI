@@ -21,7 +21,7 @@ type SearchResult = {
   locationId?: string;
   locationCode?: string | null;
   assetId?: string;
-  assetRef?: string;
+  tag?: string;
   workOrderId?: string | null;
 };
 
@@ -115,12 +115,12 @@ async function searchLocations(db: Database, user: AuthUser, query: string): Pro
 }
 
 async function searchAssets(db: Database, user: AuthUser, query: string): Promise<SearchResult[]> {
-  const rank = bestRank([assets.assetName, assets.assetRef], query);
+  const rank = bestRank([assets.assetName, assets.tag], query);
   const rows = await db
     .select({
       id: assets.id,
       assetName: assets.assetName,
-      assetRef: assets.assetRef,
+      tag: assets.tag,
       locationId: assets.locationId,
       clientId: clients.id,
       clientName: clients.name,
@@ -130,16 +130,16 @@ async function searchAssets(db: Database, user: AuthUser, query: string): Promis
     .innerJoin(locations, eq(assets.locationId, locations.id))
     .innerJoin(sites, eq(locations.siteId, sites.id))
     .innerJoin(clients, eq(sites.clientId, clients.id))
-    .where(visible(db, user, matches([assets.assetName, assets.assetRef], query)))
-    .orderBy(asc(rank), asc(assets.assetRef))
+    .where(visible(db, user, matches([assets.assetName, assets.tag], query)))
+    .orderBy(asc(rank), asc(assets.tag))
     .limit(PER_TYPE_LIMIT);
 
   return rows.map((row) => ({
     type: "asset",
     id: row.id,
-    name: row.assetName ?? row.assetRef,
+    name: row.assetName ?? row.tag,
     rank: Number(row.rank),
-    assetRef: row.assetRef,
+    tag: row.tag,
     locationId: row.locationId,
     client: { id: row.clientId, name: row.clientName },
   }));
@@ -278,7 +278,7 @@ function presentResult(result: SearchResult) {
   }
 
   if (result.type === "asset") {
-    return { ...base, assetRef: result.assetRef, locationId: result.locationId };
+    return { ...base, tag: result.tag, locationId: result.locationId };
   }
 
   if (result.type === "maintenanceSchedule" || result.type === "workOrder") {
