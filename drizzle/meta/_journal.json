@@ -162,6 +162,13 @@
       "when": 1792750000000,
       "tag": "0022_asset_identity_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792830000000,
+      "tag": "0023_drop_asset_group_element",
+      "breakpoints": true
     }
   ]
 }

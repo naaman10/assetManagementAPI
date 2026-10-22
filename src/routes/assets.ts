@@ -10,12 +10,9 @@ import {
   assetTypes,
   assets,
   clients,
-  elements,
-  groups,
   locations,
   nrm3Classifications,
   sites,
-  subElements,
 } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
@@ -65,9 +62,6 @@ const createAssetSchema = z.object({
   estimatedAgeYears: years,
   expectedLifeYears: years,
   status: z.enum(ASSET_STATUSES).optional(),
-  groupId: optionalId,
-  elementId: optionalId,
-  subElementId: optionalId,
   nrm3Code: optionalNrm3Code,
   parentAssetId: optionalId,
 });
@@ -89,9 +83,6 @@ const updateAssetSchema = z
     estimatedAgeYears: years,
     expectedLifeYears: years,
     status: z.enum(ASSET_STATUSES).optional(),
-    groupId: optionalId,
-    elementId: optionalId,
-    subElementId: optionalId,
     nrm3Code: optionalNrm3Code,
     parentAssetId: optionalId,
   })
@@ -161,10 +152,10 @@ assetRoutes.post("/locations/:id/assets", requireUser, async (c) => {
     return c.json({ error: "Asset type not found." }, 404);
   }
 
-  const classification = await classificationForAsset(db, parsed.data);
+  const nrm3 = await resolveNrm3Code(db, parsed.data.nrm3Code ?? null);
 
-  if ("error" in classification) {
-    return c.json({ error: classification.error }, classification.status);
+  if ("error" in nrm3) {
+    return c.json({ error: nrm3.error }, nrm3.status);
   }
 
   const parentAssetId = parsed.data.parentAssetId ?? null;
@@ -182,7 +173,7 @@ assetRoutes.post("/locations/:id/assets", requireUser, async (c) => {
     .values({
       locationId,
       assetTypeId: parsed.data.assetTypeId,
-      ...classification,
+      nrm3Code: nrm3.nrm3Code,
       parentAssetId: parent.parentAssetId,
       assetRef: parsed.data.assetRef,
       assetName: blankToNull(parsed.data.assetName),
@@ -254,10 +245,12 @@ assetRoutes.patch("/assets/:id", requireUser, async (c) => {
     return c.json({ error: "Asset type not found." }, 404);
   }
 
-  const classification = await classificationForAsset(db, parsed.data, current);
+  const nrm3Code =
+    parsed.data.nrm3Code === undefined ? current.nrm3Code : parsed.data.nrm3Code;
+  const nrm3 = await resolveNrm3Code(db, nrm3Code);
 
-  if ("error" in classification) {
-    return c.json({ error: classification.error }, classification.status);
+  if ("error" in nrm3) {
+    return c.json({ error: nrm3.error }, nrm3.status);
   }
 
   const parentAssetId =
@@ -275,7 +268,7 @@ assetRoutes.patch("/assets/:id", requireUser, async (c) => {
     .update(assets)
     .set({
       assetTypeId: parsed.data.assetTypeId ?? current.assetTypeId,
-      ...classification,
+      nrm3Code: nrm3.nrm3Code,
       parentAssetId: parent.parentAssetId,
       assetRef: parsed.data.assetRef ?? current.assetRef,
       assetName: parsed.data.assetName === undefined ? current.assetName : blankToNull(parsed.data.assetName),
@@ -344,9 +337,6 @@ const assetListColumns = {
   status: assets.status,
   createdAt: assets.createdAt,
   updatedAt: assets.updatedAt,
-  groupId: assets.groupId,
-  elementId: assets.elementId,
-  subElementId: assets.subElementId,
   nrm3Code: assets.nrm3Code,
   parentAssetId: assets.parentAssetId,
   siteId: locations.siteId,
@@ -356,12 +346,6 @@ const assetListColumns = {
   clientName: clients.name,
   assetTypeCode: assetTypes.code,
   assetTypeName: assetTypes.name,
-  groupCode: groups.code,
-  groupName: groups.name,
-  elementCode: elements.code,
-  elementName: elements.name,
-  subElementCode: subElements.code,
-  subElementName: subElements.name,
   nrm3Name: nrm3Classifications.name,
   nrm3Level: nrm3Classifications.level,
   parentAssetRef: parentAssets.assetRef,
@@ -376,9 +360,6 @@ function assetListQuery(db: Database) {
     .innerJoin(sites, eq(sites.id, locations.siteId))
     .innerJoin(clients, eq(clients.id, sites.clientId))
     .innerJoin(assetTypes, eq(assets.assetTypeId, assetTypes.id))
-    .leftJoin(groups, eq(assets.groupId, groups.id))
-    .leftJoin(elements, eq(assets.elementId, elements.id))
-    .leftJoin(subElements, eq(assets.subElementId, subElements.id))
     .leftJoin(nrm3Classifications, eq(assets.nrm3Code, nrm3Classifications.code))
     .leftJoin(parentAssets, eq(assets.parentAssetId, parentAssets.id));
 }
@@ -516,87 +497,22 @@ async function parentWouldCycle(db: Database, assetId: string, parentAssetId: st
   return false;
 }
 
-async function classificationForAsset(
-  db: Database,
-  input: {
-    groupId?: string | null;
-    elementId?: string | null;
-    subElementId?: string | null;
-    nrm3Code?: string | null;
-  },
-  current?: {
-    groupId: string | null;
-    elementId: string | null;
-    subElementId: string | null;
-    nrm3Code: string | null;
-  },
-) {
-  const groupId = chosenId(input.groupId, current?.groupId);
-  const elementId = chosenId(input.elementId, current?.elementId);
-  const subElementId = chosenId(input.subElementId, current?.subElementId);
-  const nrm3Code = chosenId(input.nrm3Code, current?.nrm3Code);
-
-  if (groupId) {
-    const [group] = await db.select({ id: groups.id }).from(groups).where(eq(groups.id, groupId)).limit(1);
-
-    if (!group) {
-      return { status: 404 as const, error: "Group not found." };
-    }
+async function resolveNrm3Code(db: Database, nrm3Code: string | null) {
+  if (!nrm3Code) {
+    return { nrm3Code: null };
   }
 
-  if (elementId) {
-    const [element] = await db.select({ groupId: elements.groupId }).from(elements).where(eq(elements.id, elementId)).limit(1);
+  const [nrm3] = await db
+    .select({ code: nrm3Classifications.code })
+    .from(nrm3Classifications)
+    .where(eq(nrm3Classifications.code, nrm3Code))
+    .limit(1);
 
-    if (!element) {
-      return { status: 404 as const, error: "Element not found." };
-    }
-
-    if (!groupId) {
-      return { status: 400 as const, error: "Choose a group for this element." };
-    }
-
-    if (element.groupId !== groupId) {
-      return { status: 400 as const, error: "Element does not belong to that group." };
-    }
+  if (!nrm3) {
+    return { status: 404 as const, error: "NRM3 classification not found." };
   }
 
-  if (subElementId) {
-    const [subElement] = await db
-      .select({ elementId: subElements.elementId })
-      .from(subElements)
-      .where(eq(subElements.id, subElementId))
-      .limit(1);
-
-    if (!subElement) {
-      return { status: 404 as const, error: "Sub element not found." };
-    }
-
-    if (!elementId) {
-      return { status: 400 as const, error: "Choose an element for this sub element." };
-    }
-
-    if (subElement.elementId !== elementId) {
-      return { status: 400 as const, error: "Sub element does not belong to that element." };
-    }
-  }
-
-  if (nrm3Code) {
-    const [nrm3] = await db
-      .select({ code: nrm3Classifications.code })
-      .from(nrm3Classifications)
-      .where(eq(nrm3Classifications.code, nrm3Code))
-      .limit(1);
-
-    if (!nrm3) {
-      return { status: 404 as const, error: "NRM3 classification not found." };
-    }
-  }
-
-  return { groupId, elementId, subElementId, nrm3Code };
-}
-
-function chosenId(next: string | null | undefined, previous: string | null | undefined) {
-  return next === undefined ? (previous ?? null) : next;
+  return { nrm3Code };
 }
 
 function presentAsset(asset: {
@@ -626,17 +542,8 @@ function presentAsset(asset: {
   clientName: string;
   assetTypeCode: string;
   assetTypeName: string;
-  groupId: string | null;
-  elementId: string | null;
-  subElementId: string | null;
   nrm3Code: string | null;
   parentAssetId: string | null;
-  groupCode: string | null;
-  groupName: string | null;
-  elementCode: string | null;
-  elementName: string | null;
-  subElementCode: string | null;
-  subElementName: string | null;
   nrm3Name: string | null;
   nrm3Level: number | null;
   parentAssetRef: string | null;
@@ -661,12 +568,6 @@ function presentAsset(asset: {
       code: asset.assetTypeCode,
       name: asset.assetTypeName,
     },
-    groupId: asset.groupId,
-    group: catalogRef(asset.groupId, asset.groupCode, asset.groupName),
-    elementId: asset.elementId,
-    element: catalogRef(asset.elementId, asset.elementCode, asset.elementName),
-    subElementId: asset.subElementId,
-    subElement: catalogRef(asset.subElementId, asset.subElementCode, asset.subElementName),
     nrm3Code: asset.nrm3Code,
     nrm3Classification: nrm3Ref(asset.nrm3Code, asset.nrm3Name, asset.nrm3Level),
     parentAssetId: asset.parentAssetId,
@@ -688,14 +589,6 @@ function presentAsset(asset: {
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
   };
-}
-
-function catalogRef(id: string | null, code: string | null, name: string | null) {
-  if (!id || !code || !name) {
-    return null;
-  }
-
-  return { id, code, name };
 }
 
 function nrm3Ref(code: string | null, name: string | null, level: number | null) {

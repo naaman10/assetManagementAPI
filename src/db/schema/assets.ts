@@ -13,7 +13,6 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { assetTypes } from "./assetTypes.js";
-import { elements, groups, subElements } from "./classifications.js";
 import { locations } from "./locations.js";
 import { nrm3Classifications } from "./nrm3Classifications.js";
 
@@ -39,9 +38,6 @@ export const assets = pgTable(
     assetTypeId: uuid("asset_type_id")
       .notNull()
       .references(() => assetTypes.id, { onDelete: "restrict" }),
-    groupId: uuid("group_id").references(() => groups.id, { onDelete: "restrict" }),
-    elementId: uuid("element_id").references(() => elements.id, { onDelete: "restrict" }),
-    subElementId: uuid("sub_element_id").references(() => subElements.id, { onDelete: "restrict" }),
     nrm3Code: text("nrm3_code").references(() => nrm3Classifications.code, { onDelete: "restrict" }),
     parentAssetId: uuid("parent_asset_id"),
     assetRef: varchar("asset_ref", { length: 100 }).notNull(),
@@ -68,9 +64,6 @@ export const assets = pgTable(
   (table) => [
     index("assets_location_id_idx").on(table.locationId),
     index("assets_asset_type_id_idx").on(table.assetTypeId),
-    index("assets_group_id_idx").on(table.groupId),
-    index("assets_element_id_idx").on(table.elementId),
-    index("assets_sub_element_id_idx").on(table.subElementId),
     index("assets_nrm3_code_idx").on(table.nrm3Code),
     index("assets_parent_asset_id_idx").on(table.parentAssetId),
     foreignKey({

@@ -17,7 +17,7 @@ import {
   SUB_ELEMENTS_VIEW,
 } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
-import { assets, elements, groups, subElements } from "../db/schema/index.js";
+import { elements, groups, subElements } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
@@ -61,7 +61,6 @@ mountCatalog(classificationRoutes, {
   table: groups,
   blockers: [
     { message: "This group has elements.", exists: (db, id) => referenced(db, elements, elements.groupId, id) },
-    { message: "This group is still used by assets.", exists: (db, id) => referenced(db, assets, assets.groupId, id) },
   ],
 });
 
@@ -72,14 +71,11 @@ mountCatalog(classificationRoutes, {
   notFound: "Element not found.",
   parentKey: "groupId",
   parentMissing: "Group not found.",
-  parentInUse: "This element is still used by assets.",
   permissions: { view: ELEMENTS_VIEW, create: ELEMENTS_CREATE, edit: ELEMENTS_EDIT, remove: ELEMENTS_DELETE },
   table: elements,
   parentTable: groups,
-  assetColumn: assets.elementId,
   blockers: [
     { message: "This element has sub elements.", exists: (db, id) => referenced(db, subElements, subElements.elementId, id) },
-    { message: "This element is still used by assets.", exists: (db, id) => referenced(db, assets, assets.elementId, id) },
   ],
 });
 
@@ -90,17 +86,10 @@ mountCatalog(classificationRoutes, {
   notFound: "Sub element not found.",
   parentKey: "elementId",
   parentMissing: "Element not found.",
-  parentInUse: "This sub element is still used by assets.",
   permissions: { view: SUB_ELEMENTS_VIEW, create: SUB_ELEMENTS_CREATE, edit: SUB_ELEMENTS_EDIT, remove: SUB_ELEMENTS_DELETE },
   table: subElements,
   parentTable: elements,
-  assetColumn: assets.subElementId,
-  blockers: [
-    {
-      message: "This sub element is still used by assets.",
-      exists: (db, id) => referenced(db, assets, assets.subElementId, id),
-    },
-  ],
+  blockers: [],
 });
 
 export { classificationRoutes };
@@ -114,11 +103,9 @@ function mountCatalog(
     notFound: string;
     parentKey?: "groupId" | "elementId";
     parentMissing?: string;
-    parentInUse?: string;
     permissions: { view: string; create: string; edit: string; remove: string };
     table: PgTable;
     parentTable?: PgTable;
-    assetColumn?: PgColumn;
     blockers: Blocker[];
   },
 ) {
@@ -215,10 +202,6 @@ function mountCatalog(
     if (config.parentKey && nextParentId && nextParentId !== current.parentId) {
       if (!(await parentExists(db, config, nextParentId))) {
         return c.json({ error: config.parentMissing }, 404);
-      }
-
-      if (config.assetColumn && (await referenced(db, assets, config.assetColumn, id))) {
-        return c.json({ error: config.parentInUse }, 409);
       }
     }
 
