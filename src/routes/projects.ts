@@ -359,22 +359,58 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
             tag: assets.tag,
             assetName: assets.assetName,
             locationId: assets.locationId,
+            siteId: sites.id,
+            siteName: sites.name,
+            siteReference: sites.reference,
           })
           .from(projectAssets)
           .innerJoin(assets, eq(projectAssets.assetId, assets.id))
+          .innerJoin(locations, eq(assets.locationId, locations.id))
+          .innerJoin(sites, eq(locations.siteId, sites.id))
           .where(inArray(projectAssets.projectId, ids))
           .orderBy(asc(assets.tag), asc(assets.assetName));
+
   const assetsByProject = new Map<string, ProjectAsset[]>();
+  const linksByProject = new Map<string, typeof links>();
 
   for (const link of links) {
-    const list = assetsByProject.get(link.projectId) ?? [];
-    list.push({
+    const assetList = assetsByProject.get(link.projectId) ?? [];
+    assetList.push({
       id: link.id,
       tag: link.tag,
       assetName: link.assetName,
       locationId: link.locationId,
     });
-    assetsByProject.set(link.projectId, list);
+    assetsByProject.set(link.projectId, assetList);
+
+    const projectLinks = linksByProject.get(link.projectId) ?? [];
+    projectLinks.push(link);
+    linksByProject.set(link.projectId, projectLinks);
+  }
+
+  const siteIds = [...new Set(links.map((link) => link.siteId))];
+  const locationRows =
+    siteIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: locations.id,
+            siteId: locations.siteId,
+            parentLocationId: locations.parentLocationId,
+            locationCode: locations.locationCode,
+            name: locations.name,
+            locationType: locations.locationType,
+            status: locations.status,
+          })
+          .from(locations)
+          .where(inArray(locations.siteId, siteIds))
+          .orderBy(asc(locations.name), asc(locations.locationCode));
+
+  const locationsById = new Map(locationRows.map((row) => [row.id, row]));
+  const sitesByProject = new Map<string, ProjectSite[]>();
+
+  for (const [projectId, projectLinks] of linksByProject) {
+    sitesByProject.set(projectId, buildProjectSites(projectLinks, locationsById));
   }
 
   const memberLinks =
@@ -421,9 +457,139 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
     members: membersByProject.get(row.id) ?? [],
     client: { id: row.clientId, name: row.clientName },
     assets: assetsByProject.get(row.id) ?? [],
+    sites: sitesByProject.get(row.id) ?? [],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }));
+}
+
+function buildProjectSites(
+  projectLinks: {
+    id: string;
+    tag: string;
+    assetName: string | null;
+    locationId: string;
+    siteId: string;
+    siteName: string;
+    siteReference: string | null;
+  }[],
+  locationsById: Map<
+    string,
+    {
+      id: string;
+      siteId: string;
+      parentLocationId: string | null;
+      locationCode: string | null;
+      name: string | null;
+      locationType: string | null;
+      status: string;
+    }
+  >,
+): ProjectSite[] {
+  const assetsByLocation = new Map<string, ProjectSiteAsset[]>();
+  const includedLocationIds = new Set<string>();
+  const siteMeta = new Map<string, { id: string; name: string; reference: string | null }>();
+
+  for (const link of projectLinks) {
+    siteMeta.set(link.siteId, {
+      id: link.siteId,
+      name: link.siteName,
+      reference: link.siteReference,
+    });
+
+    const assetList = assetsByLocation.get(link.locationId) ?? [];
+    assetList.push({
+      id: link.id,
+      tag: link.tag,
+      assetName: link.assetName,
+    });
+    assetsByLocation.set(link.locationId, assetList);
+
+    let currentId: string | null = link.locationId;
+    while (currentId && !includedLocationIds.has(currentId)) {
+      includedLocationIds.add(currentId);
+      currentId = locationsById.get(currentId)?.parentLocationId ?? null;
+    }
+  }
+
+  const nodes = new Map<string, ProjectLocationNode>();
+
+  for (const locationId of includedLocationIds) {
+    const location = locationsById.get(locationId);
+
+    if (!location) {
+      continue;
+    }
+
+    nodes.set(locationId, {
+      id: location.id,
+      parentLocationId: location.parentLocationId,
+      locationCode: location.locationCode,
+      name: location.name,
+      locationType: location.locationType,
+      status: location.status,
+      assets: assetsByLocation.get(locationId) ?? [],
+      locations: [],
+    });
+  }
+
+  const rootsBySite = new Map<string, ProjectLocationNode[]>();
+
+  for (const node of nodes.values()) {
+    const location = locationsById.get(node.id);
+
+    if (!location) {
+      continue;
+    }
+
+    const parentId = node.parentLocationId;
+    const parent = parentId ? nodes.get(parentId) : undefined;
+
+    if (parent) {
+      parent.locations.push(node);
+      continue;
+    }
+
+    const roots = rootsBySite.get(location.siteId) ?? [];
+    roots.push(node);
+    rootsBySite.set(location.siteId, roots);
+  }
+
+  const sortLocationNodes = (list: ProjectLocationNode[]) => {
+    list.sort((a, b) => {
+      const nameCompare = (a.name ?? "").localeCompare(b.name ?? "");
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+      return (a.locationCode ?? "").localeCompare(b.locationCode ?? "");
+    });
+
+    for (const node of list) {
+      node.assets.sort((a, b) => {
+        const tagCompare = a.tag.localeCompare(b.tag);
+        if (tagCompare !== 0) {
+          return tagCompare;
+        }
+        return (a.assetName ?? "").localeCompare(b.assetName ?? "");
+      });
+      sortLocationNodes(node.locations);
+    }
+  };
+
+  const result: ProjectSite[] = [];
+
+  for (const site of [...siteMeta.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    const roots = rootsBySite.get(site.id) ?? [];
+    sortLocationNodes(roots);
+    result.push({
+      id: site.id,
+      name: site.name,
+      reference: site.reference,
+      locations: roots,
+    });
+  }
+
+  return result;
 }
 
 async function visibleClient(db: Database, user: AuthUser, clientId: string) {
@@ -499,6 +665,30 @@ type ProjectAsset = {
   tag: string;
   assetName: string | null;
   locationId: string;
+};
+
+type ProjectSiteAsset = {
+  id: string;
+  tag: string;
+  assetName: string | null;
+};
+
+type ProjectLocationNode = {
+  id: string;
+  parentLocationId: string | null;
+  locationCode: string | null;
+  name: string | null;
+  locationType: string | null;
+  status: string;
+  assets: ProjectSiteAsset[];
+  locations: ProjectLocationNode[];
+};
+
+type ProjectSite = {
+  id: string;
+  name: string;
+  reference: string | null;
+  locations: ProjectLocationNode[];
 };
 
 type ProjectMember = {
