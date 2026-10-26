@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -12,6 +12,9 @@ import {
   clients,
   locations,
   nrm3Classifications,
+  projectAssets,
+  projectTypes,
+  projects,
   sites,
 } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
@@ -45,6 +48,9 @@ const installationDate = z
 
 const optionalId = z.uuid().nullable().optional();
 const optionalNrm3Code = z.string().trim().min(1).max(100).nullable().optional();
+const attachProjectSchema = z.object({
+  projectId: z.uuid(),
+});
 
 const createAssetSchema = z.object({
   assetTypeId: z.uuid(),
@@ -218,6 +224,78 @@ assetRoutes.get("/assets/:id", requireUser, async (c) => {
   return c.json({ asset });
 });
 
+assetRoutes.post("/assets/:id/projects", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Asset not found." }, 404);
+  }
+
+  const parsed = attachProjectSchema.safeParse(await readBody(c));
+
+  if (!parsed.success) {
+    return invalidRequest(c, parsed.error);
+  }
+
+  const db = c.get("services").db;
+  const asset = await loadAsset(db, c.get("user"), id);
+
+  if (!asset) {
+    return c.json({ error: "Asset not found." }, 404);
+  }
+
+  const project = await visibleProjectOnClient(db, c.get("user"), parsed.data.projectId, asset.client.id);
+
+  if (!project) {
+    return c.json({ error: "Project not found." }, 404);
+  }
+
+  try {
+    await db.insert(projectAssets).values({ projectId: project.id, assetId: id }).onConflictDoNothing();
+  } catch (error) {
+    return routeError(c, error);
+  }
+
+  return c.json({ asset: await loadAsset(db, c.get("user"), id) }, 201);
+});
+
+assetRoutes.delete("/assets/:id/projects/:projectId", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+  const projectId = parseId(c.req.param("projectId"));
+
+  if (!id) {
+    return c.json({ error: "Asset not found." }, 404);
+  }
+
+  if (!projectId) {
+    return c.json({ error: "Project not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const asset = await loadAsset(db, c.get("user"), id);
+
+  if (!asset) {
+    return c.json({ error: "Asset not found." }, 404);
+  }
+
+  const project = await visibleProjectOnClient(db, c.get("user"), projectId, asset.client.id);
+
+  if (!project) {
+    return c.json({ error: "Project not found." }, 404);
+  }
+
+  const deleted = await db
+    .delete(projectAssets)
+    .where(and(eq(projectAssets.assetId, id), eq(projectAssets.projectId, projectId)))
+    .returning({ projectId: projectAssets.projectId });
+
+  if (deleted.length === 0) {
+    return c.json({ error: "Asset is not on that project." }, 404);
+  }
+
+  return c.json({ ok: true });
+});
+
 assetRoutes.patch("/assets/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
@@ -364,7 +442,7 @@ async function assetsForLocation(db: Database, locationId: string) {
     .where(eq(assets.locationId, locationId))
     .orderBy(asc(assets.tag), asc(assets.assetName));
 
-  return rows.map((row) => presentAsset(row));
+  return presentAssets(db, rows);
 }
 
 async function assetsForSite(db: Database, siteId: string) {
@@ -372,7 +450,7 @@ async function assetsForSite(db: Database, siteId: string) {
     .where(eq(locations.siteId, siteId))
     .orderBy(asc(locations.name), asc(locations.locationCode), asc(assets.tag), asc(assets.assetName));
 
-  return rows.map((row) => presentAsset(row));
+  return presentAssets(db, rows);
 }
 
 async function visibleSite(db: Database, user: AuthUser, siteId: string) {
@@ -413,7 +491,74 @@ async function loadAsset(db: Database, user: AuthUser, id: string) {
     return null;
   }
 
-  return presentAsset(row);
+  const [asset] = await presentAssets(db, [row]);
+  return asset ?? null;
+}
+
+async function presentAssets(db: Database, rows: AssetRow[]) {
+  const projectsByAsset = await projectsForAssets(
+    db,
+    rows.map((row) => row.id),
+  );
+
+  return rows.map((row) => presentAsset(row, projectsByAsset.get(row.id) ?? []));
+}
+
+async function projectsForAssets(db: Database, assetIds: string[]) {
+  const projectsByAsset = new Map<string, AssetProject[]>();
+
+  if (assetIds.length === 0) {
+    return projectsByAsset;
+  }
+
+  const links = await db
+    .select({
+      assetId: projectAssets.assetId,
+      id: projects.id,
+      title: projects.title,
+      projectReference: projects.projectReference,
+      status: projects.status,
+      projectTypeId: projects.projectTypeId,
+      projectTypeCode: projectTypes.code,
+      projectTypeName: projectTypes.name,
+    })
+    .from(projectAssets)
+    .innerJoin(projects, eq(projectAssets.projectId, projects.id))
+    .innerJoin(projectTypes, eq(projects.projectTypeId, projectTypes.id))
+    .where(inArray(projectAssets.assetId, assetIds))
+    .orderBy(sql`${projects.dueDate} ASC NULLS LAST`, asc(projects.title));
+
+  for (const link of links) {
+    const list = projectsByAsset.get(link.assetId) ?? [];
+    list.push({
+      id: link.id,
+      title: link.title,
+      projectReference: link.projectReference,
+      status: link.status,
+      projectType: {
+        id: link.projectTypeId,
+        code: link.projectTypeCode,
+        name: link.projectTypeName,
+      },
+    });
+    projectsByAsset.set(link.assetId, list);
+  }
+
+  return projectsByAsset;
+}
+
+async function visibleProjectOnClient(db: Database, user: AuthUser, projectId: string, clientId: string) {
+  const [project] = await db
+    .select({ id: projects.id, clientId: projects.clientId })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+
+  if (!project || project.clientId !== clientId || !(await clientIsVisible(db, user, project.clientId))) {
+    return null;
+  }
+
+  return project;
 }
 
 async function assetTypeExists(db: Database, id: string) {
@@ -510,7 +655,7 @@ async function resolveNrm3Code(db: Database, nrm3Code: string | null) {
   return { nrm3Code };
 }
 
-function presentAsset(asset: {
+type AssetRow = {
   id: string;
   locationId: string;
   assetTypeId: string;
@@ -542,7 +687,17 @@ function presentAsset(asset: {
   nrm3Level: number | null;
   parentAssetTag: string | null;
   parentAssetName: string | null;
-}) {
+};
+
+type AssetProject = {
+  id: string;
+  title: string;
+  projectReference: string;
+  status: string;
+  projectType: { id: string; code: string; name: string };
+};
+
+function presentAsset(asset: AssetRow, assetProjects: AssetProject[]) {
   return {
     id: asset.id,
     client: {
@@ -579,6 +734,7 @@ function presentAsset(asset: {
     estimatedAgeYears: asset.estimatedAgeYears,
     expectedLifeYears: asset.expectedLifeYears,
     status: asset.status,
+    projects: assetProjects,
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
   };
