@@ -183,6 +183,13 @@
       "when": 1792990000000,
       "tag": "0025_location_hierarchy",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793070000000,
+      "tag": "0026_project_members",
+      "breakpoints": true
     }
   ]
 }

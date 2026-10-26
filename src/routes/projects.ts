@@ -3,7 +3,18 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
-import { PROJECT_STATUSES, assets, clients, locations, projectAssets, projectTypes, projects, sites, users } from "../db/schema/index.js";
+import {
+  PROJECT_STATUSES,
+  assets,
+  clients,
+  locations,
+  projectAssets,
+  projectMembers,
+  projectTypes,
+  projects,
+  sites,
+  users,
+} from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody } from "./http.js";
@@ -20,6 +31,7 @@ const optionalDate = z
     message: "Enter a date as YYYY-MM-DD.",
   });
 const assetIds = z.array(z.uuid()).max(500);
+const memberIds = z.array(z.uuid()).max(500);
 
 const createProjectSchema = z.object({
   title,
@@ -30,6 +42,7 @@ const createProjectSchema = z.object({
   startDate: optionalDate,
   dueDate: optionalDate,
   leadUserId: z.uuid().nullable().optional(),
+  memberIds: memberIds.optional(),
   assetIds: assetIds.optional(),
 });
 
@@ -43,6 +56,7 @@ const updateProjectSchema = z
     startDate: optionalDate,
     dueDate: optionalDate,
     leadUserId: z.uuid().nullable().optional(),
+    memberIds: memberIds.optional(),
     assetIds: assetIds.optional(),
   })
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
@@ -106,6 +120,12 @@ projectRoutes.post("/clients/:id/projects", requireUser, async (c) => {
     return c.json({ error: "Lead not found." }, 404);
   }
 
+  const linkedMemberIds = await usersExist(db, parsed.data.memberIds ?? []);
+
+  if (!linkedMemberIds) {
+    return c.json({ error: "Member not found." }, 404);
+  }
+
   const linkedAssetIds = await assetsOnClient(db, clientId, parsed.data.assetIds ?? []);
 
   if (!linkedAssetIds) {
@@ -127,6 +147,10 @@ projectRoutes.post("/clients/:id/projects", requireUser, async (c) => {
         dueDate,
       })
       .returning({ id: projects.id });
+
+    if (row && linkedMemberIds.length > 0) {
+      await tx.insert(projectMembers).values(linkedMemberIds.map((userId) => ({ projectId: row.id, userId })));
+    }
 
     if (row && linkedAssetIds.length > 0) {
       await tx.insert(projectAssets).values(linkedAssetIds.map((assetId) => ({ projectId: row.id, assetId })));
@@ -210,6 +234,13 @@ projectRoutes.patch("/projects/:id", requireUser, async (c) => {
     return c.json({ error: "Lead not found." }, 404);
   }
 
+  const linkedMemberIds =
+    parsed.data.memberIds === undefined ? null : await usersExist(db, parsed.data.memberIds);
+
+  if (parsed.data.memberIds !== undefined && !linkedMemberIds) {
+    return c.json({ error: "Member not found." }, 404);
+  }
+
   const linkedAssetIds =
     parsed.data.assetIds === undefined ? null : await assetsOnClient(db, current.client.id, parsed.data.assetIds);
 
@@ -232,6 +263,14 @@ projectRoutes.patch("/projects/:id", requireUser, async (c) => {
         updatedAt: new Date(),
       })
       .where(eq(projects.id, id));
+
+    if (linkedMemberIds) {
+      await tx.delete(projectMembers).where(eq(projectMembers.projectId, id));
+
+      if (linkedMemberIds.length > 0) {
+        await tx.insert(projectMembers).values(linkedMemberIds.map((userId) => ({ projectId: id, userId })));
+      }
+    }
 
     if (linkedAssetIds) {
       await tx.delete(projectAssets).where(eq(projectAssets.projectId, id));
@@ -338,6 +377,32 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
     assetsByProject.set(link.projectId, list);
   }
 
+  const memberLinks =
+    ids.length === 0
+      ? []
+      : await db
+          .select({
+            projectId: projectMembers.projectId,
+            id: users.id,
+            email: users.email,
+            name: users.name,
+          })
+          .from(projectMembers)
+          .innerJoin(users, eq(projectMembers.userId, users.id))
+          .where(inArray(projectMembers.projectId, ids))
+          .orderBy(asc(users.name), asc(users.email));
+  const membersByProject = new Map<string, ProjectMember[]>();
+
+  for (const link of memberLinks) {
+    const list = membersByProject.get(link.projectId) ?? [];
+    list.push({
+      id: link.id,
+      email: link.email,
+      name: link.name,
+    });
+    membersByProject.set(link.projectId, list);
+  }
+
   return rows.map((row) => ({
     id: row.id,
     title: row.title,
@@ -353,6 +418,7 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
     startDate: row.startDate,
     dueDate: row.dueDate,
     lead: row.leadUserId && row.leadEmail ? { id: row.leadUserId, email: row.leadEmail, name: row.leadName } : null,
+    members: membersByProject.get(row.id) ?? [],
     client: { id: row.clientId, name: row.clientName },
     assets: assetsByProject.get(row.id) ?? [],
     createdAt: row.createdAt,
@@ -378,6 +444,17 @@ async function projectTypeExists(db: Database, id: string) {
 async function userExists(db: Database, id: string) {
   const [row] = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
   return Boolean(row);
+}
+
+async function usersExist(db: Database, ids: string[]) {
+  const unique = [...new Set(ids)];
+
+  if (unique.length === 0) {
+    return unique;
+  }
+
+  const rows = await db.select({ id: users.id }).from(users).where(inArray(users.id, unique));
+  return rows.length === unique.length ? unique : null;
 }
 
 async function assetsOnClient(db: Database, clientId: string, ids: string[]) {
@@ -422,6 +499,12 @@ type ProjectAsset = {
   tag: string;
   assetName: string | null;
   locationId: string;
+};
+
+type ProjectMember = {
+  id: string;
+  email: string;
+  name: string | null;
 };
 
 function parseId(value: string) {
