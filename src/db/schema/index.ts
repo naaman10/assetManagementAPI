@@ -1,4 +1,5 @@
 export { ASSET_STATUSES, assets } from "./assets.js";
+export { assetCommentMentions, assetComments } from "./assetComments.js";
 export { PROJECT_STATUSES, projectAssets, projectMembers, projects } from "./projects.js";
 export { assetTypes } from "./assetTypes.js";
 export { elements, groups, subElements } from "./classifications.js";

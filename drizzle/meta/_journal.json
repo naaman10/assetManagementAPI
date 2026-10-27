@@ -190,6 +190,13 @@
       "when": 1793070000000,
       "tag": "0026_project_members",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793150000000,
+      "tag": "0027_asset_comments",
+      "breakpoints": true
     }
   ]
 }

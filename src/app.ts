@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { env } from "./config/env.js";
 import { assetRoutes } from "./routes/assets.js";
+import { assetCommentRoutes } from "./routes/assetComments.js";
 import { projectRoutes } from "./routes/projects.js";
 import { assetTypeRoutes } from "./routes/assetTypes.js";
 import { classificationRoutes } from "./routes/classifications.js";
@@ -48,6 +49,7 @@ export function createApp(services: Services) {
   app.route("/", searchRoutes);
   app.route("/", locationRoutes);
   app.route("/", assetRoutes);
+  app.route("/", assetCommentRoutes);
   app.route("/", projectRoutes);
   app.route("/", assetTypeRoutes);
   app.route("/", classificationRoutes);
