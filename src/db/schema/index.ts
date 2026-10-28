@@ -1,6 +1,12 @@
 export { ASSET_STATUSES, assets } from "./assets.js";
 export { assetCommentMentions, assetComments } from "./assetComments.js";
 export { PROJECT_STATUSES, projectAssets, projectMembers, projects } from "./projects.js";
+export {
+  SURVEY_CONDITION_CODES,
+  SURVEY_RECORD_STATUSES,
+  surveyRecordUsers,
+  surveyRecords,
+} from "./surveyRecords.js";
 export { assetTypes } from "./assetTypes.js";
 export { elements, groups, subElements } from "./classifications.js";
 export { nrm3Classifications } from "./nrm3Classifications.js";

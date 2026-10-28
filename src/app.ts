@@ -17,6 +17,7 @@ import { nrm3ClassificationRoutes } from "./routes/nrm3Classifications.js";
 import { projectTypeRoutes } from "./routes/projectTypes.js";
 import { searchRoutes } from "./routes/search.js";
 import { siteRoutes } from "./routes/sites.js";
+import { surveyRecordRoutes } from "./routes/surveyRecords.js";
 import { health } from "./routes/health.js";
 import { permissionRoutes } from "./routes/permissions.js";
 import { roleRoutes } from "./routes/roles.js";
@@ -58,6 +59,7 @@ export function createApp(services: Services) {
   app.route("/", projectTypeRoutes);
   app.route("/", maintenanceScheduleRoutes);
   app.route("/", workOrderRoutes);
+  app.route("/", surveyRecordRoutes);
   app.route("/", maintenanceHistoryRoutes);
   app.route("/", roleRoutes);
   app.route("/", permissionRoutes);

@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { deleteUnconductedSurveys } from "../db/deleteUnconductedSurveys.js";
 import {
   PROJECT_STATUSES,
   assetTypes,
@@ -302,11 +303,22 @@ projectRoutes.patch("/projects/:id", requireUser, async (c) => {
     }
 
     if (linkedAssetIds) {
+      const existingLinks = await tx
+        .select({ assetId: projectAssets.assetId })
+        .from(projectAssets)
+        .where(eq(projectAssets.projectId, id));
+      const nextAssetIds = new Set(linkedAssetIds);
+      const removedPairs = existingLinks
+        .filter((link) => !nextAssetIds.has(link.assetId))
+        .map((link) => ({ projectId: id, assetId: link.assetId }));
+
       await tx.delete(projectAssets).where(eq(projectAssets.projectId, id));
 
       if (linkedAssetIds.length > 0) {
         await tx.insert(projectAssets).values(linkedAssetIds.map((assetId) => ({ projectId: id, assetId })));
       }
+
+      await deleteUnconductedSurveys(tx, removedPairs);
     }
   });
 

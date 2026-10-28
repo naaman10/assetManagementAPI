@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { deleteUnconductedSurveys } from "../db/deleteUnconductedSurveys.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
 import {
   ASSET_STATUSES,
@@ -292,6 +293,8 @@ assetRoutes.delete("/assets/:id/projects/:projectId", requireUser, async (c) => 
   if (deleted.length === 0) {
     return c.json({ error: "Asset is not on that project." }, 404);
   }
+
+  await deleteUnconductedSurveys(db, [{ projectId, assetId: id }]);
 
   return c.json({ ok: true });
 });
