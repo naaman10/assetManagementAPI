@@ -210,17 +210,24 @@ Create a maintenance type with `{ "code", "name", "description", "sortOrder", "i
 
 ## Project types
 
-These routes require the session cookie. Project types are shared catalog data, so access is the permission below and does not depend on client membership. The `admin` role receives `projectTypes:view`, `projectTypes:create`, `projectTypes:edit`, and `projectTypes:delete` on the next boot. Each record is `{ "id", "code", "name", "description", "sortOrder", "isActive", "createdAt", "updatedAt" }`. `description` may be null. `code` is unique. `sortOrder` is an integer and defaults to `0`. Lists are ordered by `sortOrder`, then code.
+These routes require the session cookie. Project types are shared catalog data, so access is the permission below and does not depend on client membership. The `admin` role receives `projectTypes:view`, `projectTypes:create`, `projectTypes:edit`, and `projectTypes:delete` on the next boot. Each record is `{ "id", "code", "name", "description", "sortOrder", "isActive", "fields", "createdAt", "updatedAt" }`. `description` may be null. `code` is unique. `sortOrder` is an integer and defaults to `0`. Lists are ordered by `sortOrder`, then code.
+
+`fields` is an ordered list of configured field selections for that project type. Each item is `{ "source", "key", "label", "sortOrder" }`. `source` is one of `asset`, `maintenance_history`, or `survey_record`. `key` is a stable camelCase identifier. `label` is resolved from the field catalog at read time (falls back to `key` if a stored pair is missing from the catalog). Types with no configured fields return `"fields": []`. This is configuration persistence only — project create, asset forms, maintenance history, and survey submission do not enforce these fields yet.
 
 | Action | Request | Permission |
 | --- | --- | --- |
+| Field catalog | `GET /project-type-field-catalog` | `projectTypes:view` |
 | List project types | `GET /project-types` | `projectTypes:view` |
 | Create project type | `POST /project-types` | `projectTypes:create` |
 | Read project type | `GET /project-types/:id` | `projectTypes:view` |
 | Update project type | `PATCH /project-types/:id` | `projectTypes:edit` |
 | Delete project type | `DELETE /project-types/:id` | `projectTypes:delete` |
 
-Create a project type with `{ "code", "name", "description", "sortOrder", "isActive" }`. `code` and `name` are required. `sortOrder` defaults to `0` and `isActive` defaults to true. Update a project type with any of those fields. A duplicate code returns `409`. An unknown project type returns `404`. Delete returns `{ "ok": true }`. Deleting a project type that is still used by a project returns `409`.
+`GET /project-type-field-catalog` returns `{ "fields": [ { "source", "key", "label", "description" }, ... ] }` for selectable Asset, Maintenance History, and Survey Record fields. Survey keys match the existing survey record schema (system ids such as raw primary keys are omitted). `(source, key)` is unique across the catalog.
+
+Create a project type with `{ "code", "name", "description", "sortOrder", "isActive" }`. `code` and `name` are required. `sortOrder` defaults to `0` and `isActive` defaults to true. New types start with `"fields": []`.
+
+Update a project type with any of the create fields, and optionally `fields`: `[ { "source", "key", "sortOrder?" }, ... ]`. When `fields` is present, the full selection is replaced (not merged). An empty array clears all fields. Array order is the source of truth; `sortOrder` is normalized to `0..n-1` on save. Unknown sources, unknown catalog keys, or duplicate `(source, key)` pairs return `400` with `details.fields`. A duplicate code returns `409`. An unknown project type returns `404`. Delete returns `{ "ok": true }`. Deleting a project type that is still used by a project returns `409`. Deleting a project type cascades its configured field rows.
 
 ## Clients
 

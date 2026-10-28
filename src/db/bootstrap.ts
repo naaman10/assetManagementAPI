@@ -1,11 +1,12 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Env } from "../config/env.js";
 import type { Database } from "./types.js";
-import { permissions, rolePermissions, roles, userRoles, users } from "./schema/index.js";
+import { permissions, projectTypeFieldDefinitions, rolePermissions, roles, userRoles, users } from "./schema/index.js";
 import { ADMIN_ROLE, CLIENTS_CREATE, CLIENTS_EDIT, CLIENTS_VIEW, LEGACY_PERMISSIONS, SEEDED_PERMISSIONS } from "../auth/catalog.js";
 import { hasEnabledManager } from "../auth/access.js";
 import { Auth0RequestError } from "../auth/management.js";
 import type { Services } from "../services.js";
+import { PROJECT_TYPE_FIELD_DEFINITIONS } from "./projectTypeFieldCatalog.js";
 
 export async function ensureAccess(env: Env, services: Services) {
   const db = services.db;
@@ -13,6 +14,8 @@ export async function ensureAccess(env: Env, services: Services) {
     .insert(permissions)
     .values(SEEDED_PERMISSIONS.map((permission) => ({ ...permission })))
     .onConflictDoNothing({ target: permissions.name });
+
+  await ensureProjectTypeFieldDefinitions(db);
 
   for (const name of [CLIENTS_VIEW, CLIENTS_CREATE, CLIENTS_EDIT]) {
     const permission = SEEDED_PERMISSIONS.find((item) => item.name === name);
@@ -67,6 +70,26 @@ export async function ensureAccess(env: Env, services: Services) {
 
   await db.insert(userRoles).values({ userId, roleId: adminRoleId }).onConflictDoNothing();
   console.log("Bootstrap admin is ready.");
+}
+
+async function ensureProjectTypeFieldDefinitions(db: Database) {
+  await db
+    .insert(projectTypeFieldDefinitions)
+    .values(
+      PROJECT_TYPE_FIELD_DEFINITIONS.map((definition) => ({
+        source: definition.source,
+        fieldKey: definition.fieldKey,
+        label: definition.label,
+        description: definition.description,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [projectTypeFieldDefinitions.source, projectTypeFieldDefinitions.fieldKey],
+      set: {
+        label: sql`excluded.label`,
+        description: sql`excluded.description`,
+      },
+    });
 }
 
 async function ensureAdminRole(db: Database) {
