@@ -5,6 +5,7 @@ import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { deleteUnconductedSurveys } from "../db/deleteUnconductedSurveys.js";
+import { removeSurveyPhotos } from "../db/surveyPhotoObjects.js";
 import {
   PROJECT_ASSET_REVIEW_STATUSES,
   PROJECT_STATUSES,
@@ -22,7 +23,7 @@ import {
 } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import type { AppEnv, AuthUser } from "../types.js";
-import { invalidRequest, readBody } from "./http.js";
+import { invalidRequest, readBody, routeError } from "./http.js";
 
 const parentAssets = alias(assets, "parent_assets");
 const DOWNLOAD_SCHEMA_VERSION = 1;
@@ -383,7 +384,13 @@ projectRoutes.delete("/projects/:id", requireUser, async (c) => {
     return c.json({ error: "Project not found." }, 404);
   }
 
-  await db.delete(projects).where(eq(projects.id, id));
+  try {
+    await removeSurveyPhotos(db, c.get("services").assets, { projectId: id });
+    await db.delete(projects).where(eq(projects.id, id));
+  } catch (error) {
+    return routeError(c, error);
+  }
+
   return c.json({ ok: true });
 });
 

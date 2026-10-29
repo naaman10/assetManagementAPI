@@ -74,6 +74,32 @@ export function createAssetStorage(env: Env) {
       return key;
     },
 
+    async putSurveyPhoto(
+      clientId: string,
+      surveyRecordId: string,
+      photoId: string,
+      body: Uint8Array,
+      contentType: string,
+    ) {
+      const key = surveyPhotoKey(clientId, surveyRecordId, photoId);
+
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Body: body,
+            ContentType: contentType,
+          }),
+        );
+      } catch (error) {
+        console.error("Failed to store survey record photo", error);
+        throw new AssetStorageError();
+      }
+
+      return key;
+    },
+
     async logoUrl(key: string | null) {
       return signedUrl(client, bucket, key);
     },
@@ -102,4 +128,8 @@ function logoKey(clientId: string) {
 
 function historyPhotoKey(clientId: string, historyId: string, photoId: string) {
   return `clients/${clientId}/maintenance-history/${historyId}/${photoId}`;
+}
+
+function surveyPhotoKey(clientId: string, surveyRecordId: string, photoId: string) {
+  return `clients/${clientId}/survey-records/${surveyRecordId}/${photoId}`;
 }

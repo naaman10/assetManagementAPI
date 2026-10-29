@@ -12,6 +12,7 @@ export const PROJECT_TYPE_FIELD_TYPES = [
   "select",
   "reference",
   "referenceList",
+  "media",
 ] as const;
 
 export type ProjectTypeFieldType = (typeof PROJECT_TYPE_FIELD_TYPES)[number];
@@ -183,6 +184,7 @@ export const PROJECT_TYPE_FIELD_DEFINITIONS: ProjectTypeFieldDefinitionSeed[] = 
     type: "referenceList",
     description: null,
   },
+  { source: "survey_record", fieldKey: "photos", label: "Photos", type: "media", description: null },
 ];
 
 export function catalogKey(source: string, fieldKey: string) {

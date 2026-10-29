@@ -1,8 +1,9 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { removeSurveyPhotos } from "../db/surveyPhotoObjects.js";
 import {
   SURVEY_CONDITION_CODES,
   SURVEY_RECORD_STATUSES,
@@ -12,13 +13,18 @@ import {
   projectAssets,
   projects,
   sites,
+  surveyRecordPhotos,
   surveyRecordUsers,
   surveyRecords,
   users,
 } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
+import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
+
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+const MAX_PHOTOS = 20;
 
 const optionalText = (max: number) => z.string().trim().max(max).nullable().optional();
 const nonNegativeInt = z.number().int().min(0).nullable().optional();
@@ -80,7 +86,7 @@ surveyRecordRoutes.get("/survey-records", requireUser, async (c) => {
   const rows = await surveyListQuery(db)
     .where(clientVisibility(db, c.get("user")))
     .orderBy(sql`${surveyRecords.surveyedAt} DESC NULLS LAST`, asc(surveyRecords.createdAt));
-  const listed = await presentSurveyRecords(db, rows);
+  const listed = await presentSurveyRecords(db, c.get("services").assets, rows);
   return c.json({ surveyRecordCount: listed.length, surveyRecords: listed });
 });
 
@@ -101,7 +107,7 @@ surveyRecordRoutes.get("/projects/:id/survey-records", requireUser, async (c) =>
   const rows = await surveyListQuery(db)
     .where(eq(surveyRecords.projectId, projectId))
     .orderBy(sql`${surveyRecords.surveyedAt} DESC NULLS LAST`, asc(surveyRecords.createdAt));
-  const listed = await presentSurveyRecords(db, rows);
+  const listed = await presentSurveyRecords(db, c.get("services").assets, rows);
   return c.json({ surveyRecordCount: listed.length, surveyRecords: listed });
 });
 
@@ -168,7 +174,7 @@ surveyRecordRoutes.post("/projects/:id/survey-records", requireUser, async (c) =
       throw new Error("Survey record was not created.");
     }
 
-    const surveyRecord = await loadSurveyRecord(db, user, created.id);
+    const surveyRecord = await loadSurveyRecord(db, c.get("services").assets, user, created.id);
 
     if (!surveyRecord) {
       throw new Error("Survey record was not created.");
@@ -201,7 +207,7 @@ surveyRecordRoutes.get("/assets/:id/survey-records", requireUser, async (c) => {
   const rows = await surveyListQuery(db)
     .where(eq(surveyRecords.assetId, assetId))
     .orderBy(sql`${surveyRecords.surveyedAt} DESC NULLS LAST`, asc(surveyRecords.createdAt));
-  const listed = await presentSurveyRecords(db, rows);
+  const listed = await presentSurveyRecords(db, c.get("services").assets, rows);
   return c.json({ surveyRecordCount: listed.length, surveyRecords: listed });
 });
 
@@ -212,7 +218,12 @@ surveyRecordRoutes.get("/survey-records/:id", requireUser, async (c) => {
     return c.json({ error: "Survey record not found." }, 404);
   }
 
-  const surveyRecord = await loadSurveyRecord(c.get("services").db, c.get("user"), id);
+  const surveyRecord = await loadSurveyRecord(
+    c.get("services").db,
+    c.get("services").assets,
+    c.get("user"),
+    id,
+  );
 
   if (!surveyRecord) {
     return c.json({ error: "Survey record not found." }, 404);
@@ -235,8 +246,9 @@ surveyRecordRoutes.patch("/survey-records/:id", requireUser, async (c) => {
   }
 
   const db = c.get("services").db;
+  const storage = c.get("services").assets;
   const user = c.get("user");
-  const current = await loadSurveyRecord(db, user, id);
+  const current = await loadSurveyRecord(db, storage, user, id);
 
   if (!current) {
     return c.json({ error: "Survey record not found." }, 404);
@@ -275,7 +287,7 @@ surveyRecordRoutes.patch("/survey-records/:id", requireUser, async (c) => {
     }
   });
 
-  return c.json({ surveyRecord: await loadSurveyRecord(db, user, id) });
+  return c.json({ surveyRecord: await loadSurveyRecord(db, storage, user, id) });
 });
 
 surveyRecordRoutes.delete("/survey-records/:id", requireUser, async (c) => {
@@ -286,13 +298,137 @@ surveyRecordRoutes.delete("/survey-records/:id", requireUser, async (c) => {
   }
 
   const db = c.get("services").db;
-  const current = await loadSurveyRecord(db, c.get("user"), id);
+  const storage = c.get("services").assets;
+  const current = await loadSurveyRecord(db, storage, c.get("user"), id);
 
   if (!current) {
     return c.json({ error: "Survey record not found." }, 404);
   }
 
-  await db.delete(surveyRecords).where(eq(surveyRecords.id, id));
+  try {
+    await removeSurveyPhotos(db, storage, { surveyRecordId: id });
+    await db.delete(surveyRecords).where(eq(surveyRecords.id, id));
+  } catch (error) {
+    return routeError(c, error);
+  }
+
+  return c.json({ ok: true });
+});
+
+surveyRecordRoutes.post("/survey-records/:id/photos", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Survey record not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const storage = c.get("services").assets;
+  const current = await loadSurveyRecord(db, storage, c.get("user"), id);
+
+  if (!current) {
+    return c.json({ error: "Survey record not found." }, 404);
+  }
+
+  let body: Record<string, unknown>;
+
+  try {
+    body = await c.req.parseBody();
+  } catch {
+    return c.json({ error: "Invalid request" }, 400);
+  }
+
+  const photo = body.photo;
+
+  if (!(photo instanceof File)) {
+    return c.json({ error: "A photo image is required." }, 400);
+  }
+
+  if (photo.size > MAX_PHOTO_BYTES) {
+    return c.json({ error: "Photo must be 10 MB or smaller." }, 400);
+  }
+
+  const bytes = new Uint8Array(await photo.arrayBuffer());
+  const contentType = imageType(bytes);
+
+  if (!contentType) {
+    return c.json({ error: "Photo must be a JPEG, PNG, or WebP image." }, 400);
+  }
+
+  const [existing] = await db
+    .select({ value: count() })
+    .from(surveyRecordPhotos)
+    .where(eq(surveyRecordPhotos.surveyRecordId, id));
+
+  if ((existing?.value ?? 0) >= MAX_PHOTOS) {
+    return c.json({ error: "A survey record can have at most 20 photos." }, 400);
+  }
+
+  const photoId = crypto.randomUUID();
+  let storageKey: string | null = null;
+
+  try {
+    storageKey = await storage.putSurveyPhoto(current.client.id, id, photoId, bytes, contentType);
+    await db.insert(surveyRecordPhotos).values({
+      id: photoId,
+      surveyRecordId: id,
+      storageKey,
+      contentType,
+    });
+  } catch (error) {
+    if (storageKey) {
+      try {
+        await storage.deleteObject(storageKey);
+      } catch (cleanupError) {
+        console.error("Failed to remove a survey photo after a failed upload", cleanupError);
+      }
+    }
+
+    return routeError(c, error);
+  }
+
+  const saved = await presentSurveyPhoto(db, storage, photoId);
+
+  if (!saved) {
+    throw new Error("Survey record photo was not created.");
+  }
+
+  return c.json({ photo: saved }, 201);
+});
+
+surveyRecordRoutes.delete("/survey-records/:id/photos/:photoId", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+  const photoId = parseId(c.req.param("photoId"));
+
+  if (!id || !photoId) {
+    return c.json({ error: "Photo not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const storage = c.get("services").assets;
+  const current = await loadSurveyRecord(db, storage, c.get("user"), id);
+
+  if (!current) {
+    return c.json({ error: "Photo not found." }, 404);
+  }
+
+  const [photo] = await db
+    .select()
+    .from(surveyRecordPhotos)
+    .where(eq(surveyRecordPhotos.id, photoId))
+    .limit(1);
+
+  if (!photo || photo.surveyRecordId !== id) {
+    return c.json({ error: "Photo not found." }, 404);
+  }
+
+  try {
+    await storage.deleteObject(photo.storageKey);
+    await db.delete(surveyRecordPhotos).where(eq(surveyRecordPhotos.id, photoId));
+  } catch (error) {
+    return routeError(c, error);
+  }
+
   return c.json({ ok: true });
 });
 
@@ -333,18 +469,18 @@ function surveyListQuery(db: Database) {
     .innerJoin(assets, eq(surveyRecords.assetId, assets.id));
 }
 
-async function loadSurveyRecord(db: Database, user: AuthUser, id: string) {
+async function loadSurveyRecord(db: Database, storage: AssetStorage, user: AuthUser, id: string) {
   const [row] = await surveyListQuery(db).where(eq(surveyRecords.id, id)).limit(1);
 
   if (!row || !(await clientIsVisible(db, user, row.clientId))) {
     return null;
   }
 
-  const [surveyRecord] = await presentSurveyRecords(db, [row]);
+  const [surveyRecord] = await presentSurveyRecords(db, storage, [row]);
   return surveyRecord ?? null;
 }
 
-async function presentSurveyRecords(db: Database, rows: SurveyRow[]) {
+async function presentSurveyRecords(db: Database, storage: AssetStorage, rows: SurveyRow[]) {
   const ids = rows.map((row) => row.id);
   const surveyorRows =
     ids.length === 0
@@ -369,6 +505,39 @@ async function presentSurveyRecords(db: Database, rows: SurveyRow[]) {
     surveyorsByRecord.set(row.surveyRecordId, list);
   }
 
+  const photosByRecord = new Map<string, SurveyPhoto[]>();
+
+  if (ids.length > 0) {
+    const stored = await db
+      .select({
+        id: surveyRecordPhotos.id,
+        surveyRecordId: surveyRecordPhotos.surveyRecordId,
+        storageKey: surveyRecordPhotos.storageKey,
+        contentType: surveyRecordPhotos.contentType,
+        createdAt: surveyRecordPhotos.createdAt,
+      })
+      .from(surveyRecordPhotos)
+      .where(inArray(surveyRecordPhotos.surveyRecordId, ids))
+      .orderBy(asc(surveyRecordPhotos.createdAt));
+
+    for (const photo of stored) {
+      const url = await storage.photoUrl(photo.storageKey);
+
+      if (!url) {
+        continue;
+      }
+
+      const list = photosByRecord.get(photo.surveyRecordId) ?? [];
+      list.push({
+        id: photo.id,
+        url,
+        contentType: photo.contentType,
+        createdAt: photo.createdAt,
+      });
+      photosByRecord.set(photo.surveyRecordId, list);
+    }
+  }
+
   return rows.map((row) => ({
     id: row.id,
     projectId: row.projectId,
@@ -377,6 +546,7 @@ async function presentSurveyRecords(db: Database, rows: SurveyRow[]) {
       title: row.projectTitle,
       projectReference: row.projectReference,
     },
+    client: { id: row.clientId },
     assetId: row.assetId,
     asset: {
       id: row.assetId,
@@ -401,10 +571,43 @@ async function presentSurveyRecords(db: Database, rows: SurveyRow[]) {
     resurveyRequired: row.resurveyRequired,
     comments: row.comments,
     surveyors: surveyorsByRecord.get(row.id) ?? [],
+    photos: photosByRecord.get(row.id) ?? [],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }));
 }
+
+async function presentSurveyPhoto(db: Database, storage: AssetStorage, photoId: string) {
+  const [photo] = await db
+    .select()
+    .from(surveyRecordPhotos)
+    .where(eq(surveyRecordPhotos.id, photoId))
+    .limit(1);
+
+  if (!photo) {
+    return null;
+  }
+
+  const url = await storage.photoUrl(photo.storageKey);
+
+  if (!url) {
+    return null;
+  }
+
+  return {
+    id: photo.id,
+    url,
+    contentType: photo.contentType,
+    createdAt: photo.createdAt,
+  };
+}
+
+type SurveyPhoto = {
+  id: string;
+  url: string;
+  contentType: string;
+  createdAt: Date;
+};
 
 function surveyValuesFromBody(
   data: z.infer<typeof createSurveyRecordSchema> | z.infer<typeof updateSurveyRecordSchema>,
@@ -615,4 +818,40 @@ function blankToNull(value: string | null | undefined) {
 
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+function imageType(bytes: Uint8Array) {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  return null;
 }

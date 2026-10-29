@@ -13,6 +13,7 @@ export {
   surveyRecordUsers,
   surveyRecords,
 } from "./surveyRecords.js";
+export { surveyRecordPhotos } from "./surveyRecordPhotos.js";
 export { assetTypes } from "./assetTypes.js";
 export { elements, groups, subElements } from "./classifications.js";
 export { nrm3Classifications } from "./nrm3Classifications.js";

@@ -28,14 +28,19 @@ import {
   projectTypes,
   projects,
   sites,
+  surveyRecordPhotos,
   surveyRecordUsers,
   surveyRecords,
   users,
   workOrders,
 } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
+import type { AssetStorage } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { readBody, routeError } from "./http.js";
+
+/** Media is uploaded after create via multipart — not enforced on capture PUT. */
+const SURVEY_MEDIA_KEYS = new Set(["photos"]);
 
 type CaptureDb =
   | Database
@@ -85,7 +90,13 @@ projectAssetCaptureRoutes.get("/projects/:projectId/assets/:assetId/capture", re
     return c.json({ error: "Not found." }, 404);
   }
 
-  const capture = await loadCapture(c.get("services").db, c.get("user"), projectId, assetId);
+  const capture = await loadCapture(
+    c.get("services").db,
+    c.get("services").assets,
+    c.get("user"),
+    projectId,
+    assetId,
+  );
 
   if (!capture) {
     return c.json({ error: "Not found." }, 404);
@@ -119,7 +130,14 @@ projectAssetCaptureRoutes.put("/projects/:projectId/assets/:assetId/capture", re
   const assetValues = parsed.data.asset ?? {};
   const maintenanceHistoryValues =
     parsed.data.maintenanceHistory === undefined ? undefined : (parsed.data.maintenanceHistory ?? {});
-  const surveyRecordValues = parsed.data.surveyRecord === undefined ? undefined : (parsed.data.surveyRecord ?? {});
+  const surveyRecordValuesRaw =
+    parsed.data.surveyRecord === undefined ? undefined : (parsed.data.surveyRecord ?? {});
+  const surveyRecordValues =
+    surveyRecordValuesRaw === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(surveyRecordValuesRaw).filter(([key]) => !SURVEY_MEDIA_KEYS.has(key)),
+        );
 
   const fieldsBySource = groupConfiguredFields(context.fields);
   const fieldErrors: string[] = [];
@@ -144,6 +162,10 @@ projectAssetCaptureRoutes.put("/projects/:projectId/assets/:assetId/capture", re
       if (maintenanceHistoryValues === undefined || isEmptyValue(maintenanceHistoryValues[field.key])) {
         fieldErrors.push(`${field.source}.${field.key} is required.`);
       }
+      continue;
+    }
+
+    if (SURVEY_MEDIA_KEYS.has(field.key)) {
       continue;
     }
 
@@ -242,7 +264,7 @@ projectAssetCaptureRoutes.put("/projects/:projectId/assets/:assetId/capture", re
     return routeError(c, error);
   }
 
-  const capture = await loadCapture(db, user, projectId, assetId);
+  const capture = await loadCapture(db, c.get("services").assets, user, projectId, assetId);
 
   if (!capture) {
     return c.json({ error: "Not found." }, 404);
@@ -302,7 +324,13 @@ type CaptureContext = {
   fields: ConfiguredField[];
 };
 
-async function loadCapture(db: Database, user: AuthUser, projectId: string, assetId: string) {
+async function loadCapture(
+  db: Database,
+  storage: AssetStorage,
+  user: AuthUser,
+  projectId: string,
+  assetId: string,
+) {
   const context = await loadCaptureContext(db, user, projectId, assetId);
 
   if (!context) {
@@ -310,6 +338,12 @@ async function loadCapture(db: Database, user: AuthUser, projectId: string, asse
   }
 
   const assetValues = assetValueMap(context.asset);
+  const needsPhotos = context.fields.some(
+    (field) => field.source === "survey_record" && field.key === "photos",
+  );
+  const surveyPhotos = needsPhotos
+    ? await loadSurveyPhotosForCapture(db, storage, projectId, assetId)
+    : null;
 
   return {
     project: {
@@ -332,16 +366,73 @@ async function loadCapture(db: Database, user: AuthUser, projectId: string, asse
       status: context.asset.status,
       reviewStatus: context.reviewStatus,
     },
-    fields: context.fields.map((field) => ({
-      source: field.source,
-      key: field.key,
-      label: field.label,
-      type: field.type,
-      required: field.required,
-      sortOrder: field.sortOrder,
-      value: field.source === "asset" ? (assetValues[field.key] ?? null) : null,
-    })),
+    fields: context.fields.map((field) => {
+      let value: unknown = null;
+
+      if (field.source === "asset") {
+        value = assetValues[field.key] ?? null;
+      } else if (field.source === "survey_record" && field.key === "photos") {
+        value = surveyPhotos;
+      }
+
+      return {
+        source: field.source,
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        required: field.required,
+        sortOrder: field.sortOrder,
+        value,
+      };
+    }),
   };
+}
+
+async function loadSurveyPhotosForCapture(
+  db: Database,
+  storage: AssetStorage,
+  projectId: string,
+  assetId: string,
+) {
+  const [survey] = await db
+    .select({ id: surveyRecords.id })
+    .from(surveyRecords)
+    .where(and(eq(surveyRecords.projectId, projectId), eq(surveyRecords.assetId, assetId)))
+    .limit(1);
+
+  if (!survey) {
+    return null;
+  }
+
+  const stored = await db
+    .select({
+      id: surveyRecordPhotos.id,
+      storageKey: surveyRecordPhotos.storageKey,
+      contentType: surveyRecordPhotos.contentType,
+      createdAt: surveyRecordPhotos.createdAt,
+    })
+    .from(surveyRecordPhotos)
+    .where(eq(surveyRecordPhotos.surveyRecordId, survey.id))
+    .orderBy(asc(surveyRecordPhotos.createdAt));
+
+  const photos: Array<{ id: string; url: string; contentType: string; createdAt: Date }> = [];
+
+  for (const photo of stored) {
+    const url = await storage.photoUrl(photo.storageKey);
+
+    if (!url) {
+      continue;
+    }
+
+    photos.push({
+      id: photo.id,
+      url,
+      contentType: photo.contentType,
+      createdAt: photo.createdAt,
+    });
+  }
+
+  return photos;
 }
 
 async function loadCaptureContext(db: Database, user: AuthUser, projectId: string, assetId: string) {

@@ -6,6 +6,7 @@ import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { deleteUnconductedSurveys } from "../db/deleteUnconductedSurveys.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
+import { removeSurveyPhotos } from "../db/surveyPhotoObjects.js";
 import {
   ASSET_STATUSES,
   assetTypes,
@@ -385,7 +386,9 @@ assetRoutes.delete("/assets/:id", requireUser, async (c) => {
   }
 
   try {
-    await removeHistoryPhotos(db, c.get("services").assets, { assetId: id });
+    const storage = c.get("services").assets;
+    await removeHistoryPhotos(db, storage, { assetId: id });
+    await removeSurveyPhotos(db, storage, { assetId: id });
     await db.delete(assets).where(eq(assets.id, id));
   } catch (error) {
     return routeError(c, error);
