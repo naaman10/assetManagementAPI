@@ -80,6 +80,7 @@ async function ensureProjectTypeFieldDefinitions(db: Database) {
         source: definition.source,
         fieldKey: definition.fieldKey,
         label: definition.label,
+        fieldType: definition.type,
         description: definition.description,
       })),
     )
@@ -87,6 +88,7 @@ async function ensureProjectTypeFieldDefinitions(db: Database) {
       target: [projectTypeFieldDefinitions.source, projectTypeFieldDefinitions.fieldKey],
       set: {
         label: sql`excluded.label`,
+        fieldType: sql`excluded.field_type`,
         description: sql`excluded.description`,
       },
     });

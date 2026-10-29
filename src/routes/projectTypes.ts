@@ -24,6 +24,7 @@ const configuredFieldSchema = z.object({
   source: fieldSource,
   key: z.string().trim().min(1).max(100),
   sortOrder: z.number().int().optional(),
+  required: z.boolean().optional(),
 });
 
 const createProjectTypeSchema = z.object({
@@ -62,6 +63,7 @@ projectTypeRoutes.get("/project-type-field-catalog", requirePermission(PROJECT_T
       source: definition.source,
       key: definition.fieldKey,
       label: definition.label,
+      type: definition.type,
       description: definition.description,
     })),
   });
@@ -189,6 +191,7 @@ projectTypeRoutes.patch("/project-types/:id", requirePermission(PROJECT_TYPES_ED
               source: field.source,
               fieldKey: field.key,
               sortOrder: index,
+              required: field.required ?? false,
             })),
           );
         }
@@ -278,6 +281,8 @@ type PresentProjectTypeField = {
   source: string;
   key: string;
   label: string;
+  type: string;
+  required: boolean;
   sortOrder: number;
 };
 
@@ -287,6 +292,8 @@ function presentConfiguredField(row: typeof projectTypeFields.$inferSelect): Pre
     source: row.source,
     key: row.fieldKey,
     label: definition?.label ?? row.fieldKey,
+    type: definition?.type ?? "text",
+    required: row.required,
     sortOrder: row.sortOrder,
   };
 }
