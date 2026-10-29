@@ -7,6 +7,8 @@ import { users } from "./users.js";
 
 export const PROJECT_STATUSES = ["scheduled", "in_progress", "completed"] as const;
 
+export const PROJECT_ASSET_REVIEW_STATUSES = ["todo", "in_progress", "done"] as const;
+
 export const projects = pgTable(
   "projects",
   {
@@ -48,10 +50,17 @@ export const projectAssets = pgTable(
     assetId: uuid("asset_id")
       .notNull()
       .references(() => assets.id, { onDelete: "cascade" }),
+    reviewStatus: varchar("review_status", { length: 30 }).notNull().default("todo"),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   },
   (table) => [
     primaryKey({ columns: [table.projectId, table.assetId] }),
     index("project_assets_asset_id_idx").on(table.assetId),
+    index("project_assets_project_review_status_idx").on(table.projectId, table.reviewStatus),
+    check(
+      "project_assets_review_status_check",
+      sql`${table.reviewStatus} IN ('todo', 'in_progress', 'done')`,
+    ),
   ],
 );
 

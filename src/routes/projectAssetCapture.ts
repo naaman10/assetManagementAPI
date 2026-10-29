@@ -223,6 +223,16 @@ projectAssetCaptureRoutes.put("/projects/:projectId/assets/:assetId/capture", re
           updatedSurveyRecordId = survey.id;
         }
       }
+
+      if (context.reviewStatus === "todo") {
+        await tx
+          .update(projectAssets)
+          .set({
+            reviewStatus: "in_progress",
+            updatedAt: new Date(),
+          })
+          .where(and(eq(projectAssets.projectId, projectId), eq(projectAssets.assetId, assetId)));
+      }
     });
   } catch (error) {
     if (error instanceof CaptureHttpError) {
@@ -272,6 +282,7 @@ type CaptureContext = {
   projectTypeCode: string;
   projectTypeName: string;
   clientId: string;
+  reviewStatus: string;
   asset: {
     id: string;
     locationId: string;
@@ -319,6 +330,7 @@ async function loadCapture(db: Database, user: AuthUser, projectId: string, asse
       locationId: context.asset.locationId,
       assetTypeId: context.asset.assetTypeId,
       status: context.asset.status,
+      reviewStatus: context.reviewStatus,
     },
     fields: context.fields.map((field) => ({
       source: field.source,
@@ -356,6 +368,7 @@ async function loadCaptureContext(db: Database, user: AuthUser, projectId: strin
       model: assets.model,
       serialNumber: assets.serialNumber,
       yearOfManufacture: assets.yearOfManufacture,
+      reviewStatus: projectAssets.reviewStatus,
       assetClientId: sites.clientId,
     })
     .from(projectAssets)
@@ -397,6 +410,7 @@ async function loadCaptureContext(db: Database, user: AuthUser, projectId: strin
     projectTypeCode: row.projectTypeCode,
     projectTypeName: row.projectTypeName,
     clientId: row.clientId,
+    reviewStatus: row.reviewStatus,
     asset: {
       id: row.assetId,
       locationId: row.locationId,

@@ -6,6 +6,7 @@ import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { deleteUnconductedSurveys } from "../db/deleteUnconductedSurveys.js";
 import {
+  PROJECT_ASSET_REVIEW_STATUSES,
   PROJECT_STATUSES,
   assetTypes,
   assets,
@@ -227,6 +228,49 @@ projectRoutes.get("/projects/:id", requireUser, async (c) => {
   return c.json({ project });
 });
 
+const updateProjectAssetReviewSchema = z.object({
+  reviewStatus: z.enum(PROJECT_ASSET_REVIEW_STATUSES),
+});
+
+projectRoutes.patch("/projects/:projectId/assets/:assetId", requireUser, async (c) => {
+  const projectId = parseId(c.req.param("projectId"));
+  const assetId = parseId(c.req.param("assetId"));
+
+  if (!projectId || !assetId) {
+    return c.json({ error: "Not found." }, 404);
+  }
+
+  const parsed = updateProjectAssetReviewSchema.safeParse(await readBody(c));
+
+  if (!parsed.success) {
+    return invalidRequest(c, parsed.error);
+  }
+
+  const db = c.get("services").db;
+  const user = c.get("user");
+  const linked = await loadProjectAssetSummary(db, user, projectId, assetId);
+
+  if (!linked) {
+    return c.json({ error: "Not found." }, 404);
+  }
+
+  await db
+    .update(projectAssets)
+    .set({
+      reviewStatus: parsed.data.reviewStatus,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(projectAssets.projectId, projectId), eq(projectAssets.assetId, assetId)));
+
+  const updated = await loadProjectAssetSummary(db, user, projectId, assetId);
+
+  if (!updated) {
+    return c.json({ error: "Not found." }, 404);
+  }
+
+  return c.json({ asset: updated });
+});
+
 projectRoutes.patch("/projects/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
@@ -384,6 +428,38 @@ async function loadProject(db: Database, user: AuthUser, id: string) {
   return project ?? null;
 }
 
+async function loadProjectAssetSummary(db: Database, user: AuthUser, projectId: string, assetId: string) {
+  const [row] = await db
+    .select({
+      id: assets.id,
+      tag: assets.tag,
+      assetName: assets.assetName,
+      locationId: assets.locationId,
+      reviewStatus: projectAssets.reviewStatus,
+      clientId: projects.clientId,
+      assetClientId: sites.clientId,
+    })
+    .from(projectAssets)
+    .innerJoin(projects, eq(projectAssets.projectId, projects.id))
+    .innerJoin(assets, eq(projectAssets.assetId, assets.id))
+    .innerJoin(locations, eq(assets.locationId, locations.id))
+    .innerJoin(sites, eq(locations.siteId, sites.id))
+    .where(and(eq(projectAssets.projectId, projectId), eq(projectAssets.assetId, assetId)))
+    .limit(1);
+
+  if (!row || row.clientId !== row.assetClientId || !(await clientIsVisible(db, user, row.clientId))) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    tag: row.tag,
+    assetName: row.assetName,
+    locationId: row.locationId,
+    reviewStatus: row.reviewStatus,
+  };
+}
+
 async function buildProjectDownload(db: Database, row: ProjectRow) {
   const memberRows = await db
     .select({
@@ -414,6 +490,7 @@ async function buildProjectDownload(db: Database, row: ProjectRow) {
       estimatedAgeYears: assets.estimatedAgeYears,
       expectedLifeYears: assets.expectedLifeYears,
       status: assets.status,
+      reviewStatus: projectAssets.reviewStatus,
       createdAt: assets.createdAt,
       updatedAt: assets.updatedAt,
       nrm3Code: assets.nrm3Code,
@@ -562,6 +639,7 @@ function presentDownloadAsset(asset: {
   estimatedAgeYears: number | null;
   expectedLifeYears: number | null;
   status: string;
+  reviewStatus: string;
   createdAt: Date;
   updatedAt: Date;
   nrm3Code: string | null;
@@ -599,6 +677,7 @@ function presentDownloadAsset(asset: {
     estimatedAgeYears: asset.estimatedAgeYears,
     expectedLifeYears: asset.expectedLifeYears,
     status: asset.status,
+    reviewStatus: asset.reviewStatus,
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
   };
@@ -794,6 +873,7 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
             tag: assets.tag,
             assetName: assets.assetName,
             locationId: assets.locationId,
+            reviewStatus: projectAssets.reviewStatus,
             siteId: sites.id,
             siteName: sites.name,
             siteReference: sites.reference,
@@ -815,6 +895,7 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
       tag: link.tag,
       assetName: link.assetName,
       locationId: link.locationId,
+      reviewStatus: link.reviewStatus,
     });
     assetsByProject.set(link.projectId, assetList);
 
@@ -904,6 +985,7 @@ function buildProjectSites(
     tag: string;
     assetName: string | null;
     locationId: string;
+    reviewStatus: string;
     siteId: string;
     siteName: string;
     siteReference: string | null;
@@ -937,6 +1019,7 @@ function buildProjectSites(
       id: link.id,
       tag: link.tag,
       assetName: link.assetName,
+      reviewStatus: link.reviewStatus,
     });
     assetsByLocation.set(link.locationId, assetList);
 
@@ -1100,12 +1183,14 @@ type ProjectAsset = {
   tag: string;
   assetName: string | null;
   locationId: string;
+  reviewStatus: string;
 };
 
 type ProjectSiteAsset = {
   id: string;
   tag: string;
   assetName: string | null;
+  reviewStatus: string;
 };
 
 type ProjectLocationNode = {
@@ -1154,6 +1239,7 @@ type DownloadAsset = {
   estimatedAgeYears: number | null;
   expectedLifeYears: number | null;
   status: string;
+  reviewStatus: string;
   createdAt: Date;
   updatedAt: Date;
 };
