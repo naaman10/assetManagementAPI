@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility, isAdmin } from "../auth/clientAccess.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
+import { removeLocationPlans } from "../db/locationPlanObjects.js";
 import { removeSurveyPhotos } from "../db/surveyPhotoObjects.js";
 import { CLIENTS_CREATE, CLIENTS_DELETE, CLIENTS_EDIT, CLIENTS_VIEW } from "../auth/catalog.js";
 import { requirePermission } from "../auth/middleware.js";
@@ -285,6 +286,7 @@ clientRoutes.delete("/clients/:id", requirePermission(CLIENTS_DELETE), async (c)
 
     await removeHistoryPhotos(db, storage, { clientId: id });
     await removeSurveyPhotos(db, storage, { clientId: id });
+    await removeLocationPlans(db, storage, { clientId: id });
 
     await db.transaction(async (tx) => {
       const clientSites = await tx.select({ id: sites.id }).from(sites).where(eq(sites.clientId, id));

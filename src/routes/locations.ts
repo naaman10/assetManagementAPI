@@ -1,14 +1,52 @@
-import { and, asc, eq, isNull, SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
-import { LOCATION_STATUSES, LOCATION_TYPES, clients, locations, sites } from "../db/schema/index.js";
+import {
+  isClientOwnedPlanKey,
+  isManagedLocationPlanKey,
+  removeLocationPlans,
+} from "../db/locationPlanObjects.js";
+import {
+  LOCATION_STATUSES,
+  LOCATION_TYPES,
+  clients,
+  locationPlanFeatures,
+  locationPlans,
+  locations,
+  sites,
+} from "../db/schema/index.js";
+import type { PlanFeatureGeometry } from "../db/schema/locationPlans.js";
 import type { Database } from "../db/types.js";
+import { AssetStorageError, type AssetStorage } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
+
+const MAX_PLAN_BYTES = 25 * 1024 * 1024;
+
+const linkPlanSchema = z.object({
+  storageKey: z.string().trim().min(1).max(512),
+  contentType: z.string().trim().min(1).max(100),
+  width: z.number().int().positive().nullable().optional(),
+  height: z.number().int().positive().nullable().optional(),
+});
+
+const planFeatureSchema = z.object({
+  locationId: z.uuid(),
+  geometry: z.object({
+    type: z.literal("Polygon"),
+    coordinates: z.array(z.array(z.array(z.number()).min(2).max(2)).min(3)).min(1),
+  }),
+  labelOverride: z.string().trim().max(255).nullable().optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+const replacePlanFeaturesSchema = z.object({
+  features: z.array(planFeatureSchema),
+});
 
 const parentLocations = alias(locations, "parent_locations");
 
@@ -173,6 +211,259 @@ locationRoutes.get("/locations/:id", requireUser, async (c) => {
   return c.json({ location });
 });
 
+locationRoutes.get("/locations/:id/plan", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const location = await loadLocation(db, c.get("user"), id);
+
+  if (!location) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const plan = await presentLocationPlan(db, c.get("services").assets, id);
+
+  if (!plan) {
+    return c.json({ error: "Plan not found." }, 404);
+  }
+
+  return c.json({ plan });
+});
+
+/** Upload a new plan (multipart field `plan`) or link an existing object (`{ storageKey, contentType }`). Floors only. */
+locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const location = await loadLocation(db, c.get("user"), id);
+
+  if (!location) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  if (location.locationType !== "floor") {
+    return c.json({ error: "Plans can only be attached to floor locations." }, 400);
+  }
+
+  const contentTypeHeader = c.req.header("content-type") ?? "";
+  const storage = c.get("services").assets;
+  let storageKey: string;
+  let contentType: string;
+  let width: number | null = null;
+  let height: number | null = null;
+
+  if (contentTypeHeader.includes("multipart/form-data")) {
+    const body = await c.req.parseBody({ all: true });
+    const file = body.plan;
+
+    if (!(file instanceof File)) {
+      return c.json({ error: "A plan file is required (field name: plan)." }, 400);
+    }
+
+    if (file.size > MAX_PLAN_BYTES) {
+      return c.json({ error: "Plan file must be 25 MB or less." }, 400);
+    }
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const detected = planContentType(bytes, file.type);
+
+    if (!detected) {
+      return c.json({ error: "Plan must be a PDF, JPEG, PNG, or WebP file." }, 400);
+    }
+
+    contentType = detected;
+    const planId = crypto.randomUUID();
+
+    try {
+      storageKey = await storage.putLocationPlan(location.client.id, id, planId, bytes, contentType);
+    } catch (error) {
+      if (error instanceof AssetStorageError) {
+        return c.json({ error: error.message }, 503);
+      }
+      return routeError(c, error);
+    }
+  } else {
+    const parsed = linkPlanSchema.safeParse(await readBody(c));
+
+    if (!parsed.success) {
+      return invalidRequest(c, parsed.error);
+    }
+
+    if (!isClientOwnedPlanKey(location.client.id, parsed.data.storageKey)) {
+      return c.json({ error: "storageKey must belong to this client." }, 400);
+    }
+
+    storageKey = parsed.data.storageKey;
+    contentType = parsed.data.contentType;
+    width = parsed.data.width ?? null;
+    height = parsed.data.height ?? null;
+  }
+
+  const [existing] = await db
+    .select({
+      id: locationPlans.id,
+      storageKey: locationPlans.storageKey,
+    })
+    .from(locationPlans)
+    .where(eq(locationPlans.locationId, id))
+    .limit(1);
+
+  const previousKey = existing?.storageKey ?? null;
+
+  try {
+    if (existing) {
+      await db
+        .update(locationPlans)
+        .set({
+          storageKey,
+          contentType,
+          width,
+          height,
+          updatedAt: new Date(),
+        })
+        .where(eq(locationPlans.id, existing.id));
+    } else {
+      await db.insert(locationPlans).values({
+        locationId: id,
+        storageKey,
+        contentType,
+        width,
+        height,
+      });
+    }
+  } catch (error) {
+    if (isManagedLocationPlanKey(storageKey) && storageKey !== previousKey) {
+      try {
+        await storage.deleteObject(storageKey);
+      } catch (cleanupError) {
+        console.error("Failed to remove location plan after a failed save", cleanupError);
+      }
+    }
+    return routeError(c, error);
+  }
+
+  if (previousKey && previousKey !== storageKey && isManagedLocationPlanKey(previousKey)) {
+    try {
+      await storage.deleteObject(previousKey);
+    } catch (error) {
+      console.error("Failed to remove previous location plan object", error);
+    }
+  }
+
+  const plan = await presentLocationPlan(db, storage, id);
+
+  if (!plan) {
+    throw new Error("Location plan was not saved.");
+  }
+
+  return c.json({ plan });
+});
+
+locationRoutes.put("/locations/:id/plan/features", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const parsed = replacePlanFeaturesSchema.safeParse(await readBody(c));
+
+  if (!parsed.success) {
+    return invalidRequest(c, parsed.error);
+  }
+
+  const db = c.get("services").db;
+  const location = await loadLocation(db, c.get("user"), id);
+
+  if (!location) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const [plan] = await db.select({ id: locationPlans.id }).from(locationPlans).where(eq(locationPlans.locationId, id)).limit(1);
+
+  if (!plan) {
+    return c.json({ error: "Plan not found." }, 404);
+  }
+
+  const childIds = new Set(await descendantRoomAreaIds(db, id));
+
+  for (const feature of parsed.data.features) {
+    if (!childIds.has(feature.locationId)) {
+      return c.json(
+        { error: `Feature location ${feature.locationId} must be a room or area under this floor.` },
+        400,
+      );
+    }
+  }
+
+  await db.delete(locationPlanFeatures).where(eq(locationPlanFeatures.planId, plan.id));
+
+  if (parsed.data.features.length > 0) {
+    await db.insert(locationPlanFeatures).values(
+      parsed.data.features.map((feature, index) => ({
+        planId: plan.id,
+        locationId: feature.locationId,
+        geometry: normalizeGeometry(feature.geometry),
+        labelOverride: feature.labelOverride === undefined ? null : blankToNull(feature.labelOverride),
+        sortOrder: feature.sortOrder ?? index,
+      })),
+    );
+  }
+
+  const presented = await presentLocationPlan(db, c.get("services").assets, id);
+
+  if (!presented) {
+    throw new Error("Location plan was not found after updating features.");
+  }
+
+  return c.json({ plan: presented });
+});
+
+locationRoutes.delete("/locations/:id/plan", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const location = await loadLocation(db, c.get("user"), id);
+
+  if (!location) {
+    return c.json({ error: "Location not found." }, 404);
+  }
+
+  const [plan] = await db
+    .select({ id: locationPlans.id, storageKey: locationPlans.storageKey })
+    .from(locationPlans)
+    .where(eq(locationPlans.locationId, id))
+    .limit(1);
+
+  if (!plan) {
+    return c.json({ error: "Plan not found." }, 404);
+  }
+
+  await db.delete(locationPlans).where(eq(locationPlans.id, plan.id));
+
+  if (isManagedLocationPlanKey(plan.storageKey)) {
+    try {
+      await c.get("services").assets.deleteObject(plan.storageKey);
+    } catch (error) {
+      console.error("Failed to remove location plan object", error);
+    }
+  }
+
+  return c.json({ ok: true });
+});
+
 locationRoutes.patch("/locations/:id", requireUser, async (c) => {
   const id = parseId(c.req.param("id"));
 
@@ -245,6 +536,9 @@ locationRoutes.delete("/locations/:id", requireUser, async (c) => {
     return c.json({ error: "Location not found." }, 404);
   }
 
+  const storage = c.get("services").assets;
+  await removeLocationPlans(db, storage, { locationId: id });
+
   try {
     await db.delete(locations).where(eq(locations.id, id));
   } catch (error) {
@@ -255,7 +549,7 @@ locationRoutes.delete("/locations/:id", requireUser, async (c) => {
     return routeError(c, error);
   }
 
-  await removeHistoryPhotos(db, c.get("services").assets, { locationId: id });
+  await removeHistoryPhotos(db, storage, { locationId: id });
   return c.json({ ok: true });
 });
 
@@ -700,4 +994,157 @@ function blankToNull(value: string | null | undefined) {
 
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+async function presentLocationPlan(db: Database, storage: AssetStorage, locationId: string) {
+  const [plan] = await db
+    .select({
+      id: locationPlans.id,
+      locationId: locationPlans.locationId,
+      storageKey: locationPlans.storageKey,
+      contentType: locationPlans.contentType,
+      width: locationPlans.width,
+      height: locationPlans.height,
+      createdAt: locationPlans.createdAt,
+      updatedAt: locationPlans.updatedAt,
+    })
+    .from(locationPlans)
+    .where(eq(locationPlans.locationId, locationId))
+    .limit(1);
+
+  if (!plan) {
+    return null;
+  }
+
+  const featureRows = await db
+    .select({
+      id: locationPlanFeatures.id,
+      locationId: locationPlanFeatures.locationId,
+      geometry: locationPlanFeatures.geometry,
+      labelOverride: locationPlanFeatures.labelOverride,
+      sortOrder: locationPlanFeatures.sortOrder,
+      locationCode: locations.locationCode,
+      locationName: locations.name,
+      locationType: locations.locationType,
+    })
+    .from(locationPlanFeatures)
+    .innerJoin(locations, eq(locations.id, locationPlanFeatures.locationId))
+    .where(eq(locationPlanFeatures.planId, plan.id))
+    .orderBy(asc(locationPlanFeatures.sortOrder), asc(locations.name));
+
+  const url = await storage.planUrl(plan.storageKey);
+
+  return {
+    id: plan.id,
+    locationId: plan.locationId,
+    url,
+    contentType: plan.contentType,
+    width: plan.width,
+    height: plan.height,
+    features: featureRows.map((feature) => ({
+      id: feature.id,
+      locationId: feature.locationId,
+      location: {
+        id: feature.locationId,
+        locationCode: feature.locationCode,
+        name: feature.locationName,
+        locationType: feature.locationType,
+      },
+      geometry: feature.geometry,
+      labelOverride: feature.labelOverride,
+      sortOrder: feature.sortOrder,
+    })),
+    createdAt: plan.createdAt,
+    updatedAt: plan.updatedAt,
+  };
+}
+
+async function descendantRoomAreaIds(db: Database, floorId: string) {
+  const ids: string[] = [];
+  let frontier = [floorId];
+
+  while (frontier.length > 0) {
+    const children = await db
+      .select({
+        id: locations.id,
+        locationType: locations.locationType,
+      })
+      .from(locations)
+      .where(inArray(locations.parentLocationId, frontier));
+
+    frontier = [];
+
+    for (const child of children) {
+      if (child.locationType === "room" || child.locationType === "area") {
+        ids.push(child.id);
+      }
+
+      if (child.locationType === "area" || child.locationType === "floor" || child.locationType === "building") {
+        frontier.push(child.id);
+      }
+    }
+  }
+
+  return ids;
+}
+
+function normalizeGeometry(geometry: {
+  type: "Polygon";
+  coordinates: number[][][];
+}): PlanFeatureGeometry {
+  return {
+    type: "Polygon",
+    coordinates: geometry.coordinates.map((ring) => ring.map((point) => [Number(point[0]), Number(point[1])])),
+  };
+}
+
+function planContentType(bytes: Uint8Array, declaredType: string) {
+  if (bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+    return "application/pdf";
+  }
+
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  const normalized = declaredType.split(";")[0]?.trim().toLowerCase() ?? "";
+
+  if (
+    normalized === "application/pdf" ||
+    normalized === "image/jpeg" ||
+    normalized === "image/png" ||
+    normalized === "image/webp"
+  ) {
+    return normalized;
+  }
+
+  return null;
 }

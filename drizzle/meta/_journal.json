@@ -232,6 +232,13 @@
       "when": 1793550000000,
       "tag": "0032_survey_record_photos",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793630000000,
+      "tag": "0033_location_plans",
+      "breakpoints": true
     }
   ]
 }

@@ -100,11 +100,41 @@ export function createAssetStorage(env: Env) {
       return key;
     },
 
+    async putLocationPlan(
+      clientId: string,
+      locationId: string,
+      planId: string,
+      body: Uint8Array,
+      contentType: string,
+    ) {
+      const key = locationPlanKey(clientId, locationId, planId);
+
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Body: body,
+            ContentType: contentType,
+          }),
+        );
+      } catch (error) {
+        console.error("Failed to store location plan", error);
+        throw new AssetStorageError();
+      }
+
+      return key;
+    },
+
     async logoUrl(key: string | null) {
       return signedUrl(client, bucket, key);
     },
 
     async photoUrl(key: string) {
+      return signedUrl(client, bucket, key);
+    },
+
+    async planUrl(key: string) {
       return signedUrl(client, bucket, key);
     },
   };
@@ -132,4 +162,8 @@ function historyPhotoKey(clientId: string, historyId: string, photoId: string) {
 
 function surveyPhotoKey(clientId: string, surveyRecordId: string, photoId: string) {
   return `clients/${clientId}/survey-records/${surveyRecordId}/${photoId}`;
+}
+
+function locationPlanKey(clientId: string, locationId: string, planId: string) {
+  return `clients/${clientId}/locations/${locationId}/plans/${planId}`;
 }

@@ -22,6 +22,8 @@ export { clientMembers } from "./clientMembers.js";
 export { clientSettings } from "./clientSettings.js";
 export { clients } from "./clients.js";
 export { LOCATION_STATUSES, LOCATION_TYPES, locations } from "./locations.js";
+export { locationPlanFeatures, locationPlans } from "./locationPlans.js";
+export type { PlanFeatureGeometry } from "./locationPlans.js";
 export { maintenanceHistory } from "./maintenanceHistory.js";
 export { maintenanceHistoryPhotos } from "./maintenanceHistoryPhotos.js";
 export { maintenanceTypes } from "./maintenanceTypes.js";
