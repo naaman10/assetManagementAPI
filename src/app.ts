@@ -15,6 +15,7 @@ import { maintenanceScheduleRoutes } from "./routes/maintenanceSchedules.js";
 import { maintenanceTypeRoutes } from "./routes/maintenanceTypes.js";
 import { nrm3ClassificationRoutes } from "./routes/nrm3Classifications.js";
 import { projectTypeRoutes } from "./routes/projectTypes.js";
+import { projectAssetCaptureRoutes } from "./routes/projectAssetCapture.js";
 import { searchRoutes } from "./routes/search.js";
 import { siteRoutes } from "./routes/sites.js";
 import { surveyRecordRoutes } from "./routes/surveyRecords.js";
@@ -52,6 +53,7 @@ export function createApp(services: Services) {
   app.route("/", assetRoutes);
   app.route("/", assetCommentRoutes);
   app.route("/", projectRoutes);
+  app.route("/", projectAssetCaptureRoutes);
   app.route("/", assetTypeRoutes);
   app.route("/", classificationRoutes);
   app.route("/", nrm3ClassificationRoutes);
