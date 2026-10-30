@@ -18,6 +18,7 @@ import { projectTypeRoutes } from "./routes/projectTypes.js";
 import { projectAssetCaptureRoutes } from "./routes/projectAssetCapture.js";
 import { searchRoutes } from "./routes/search.js";
 import { siteRoutes } from "./routes/sites.js";
+import { sitePlanRoutes } from "./routes/sitePlans.js";
 import { surveyRecordRoutes } from "./routes/surveyRecords.js";
 import { health } from "./routes/health.js";
 import { permissionRoutes } from "./routes/permissions.js";
@@ -50,6 +51,7 @@ export function createApp(services: Services) {
   app.route("/", siteRoutes);
   app.route("/", searchRoutes);
   app.route("/", locationRoutes);
+  app.route("/", sitePlanRoutes);
   app.route("/", assetRoutes);
   app.route("/", assetCommentRoutes);
   app.route("/", projectRoutes);

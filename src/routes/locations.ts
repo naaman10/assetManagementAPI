@@ -1,10 +1,16 @@
-import { and, asc, eq, inArray, isNull, SQL } from "drizzle-orm";
+import { and, asc, eq, isNull, SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
+import {
+  defaultPlanName,
+  planContentType,
+  presentLocationScopedPlan,
+  replacePlanFeatures,
+} from "../db/locationPlanHelpers.js";
 import {
   isClientOwnedPlanKey,
   isManagedLocationPlanKey,
@@ -14,22 +20,22 @@ import {
   LOCATION_STATUSES,
   LOCATION_TYPES,
   clients,
-  locationPlanFeatures,
   locationPlans,
   locations,
   sites,
 } from "../db/schema/index.js";
-import type { PlanFeatureGeometry } from "../db/schema/locationPlans.js";
 import type { Database } from "../db/types.js";
-import { AssetStorageError, type AssetStorage } from "../storage/assets.js";
+import { AssetStorageError } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
 
 const MAX_PLAN_BYTES = 25 * 1024 * 1024;
+const planNameField = z.string().trim().min(1).max(255);
 
 const linkPlanSchema = z.object({
   storageKey: z.string().trim().min(1).max(512),
   contentType: z.string().trim().min(1).max(100),
+  name: planNameField.optional(),
   width: z.number().int().positive().nullable().optional(),
   height: z.number().int().positive().nullable().optional(),
 });
@@ -225,7 +231,7 @@ locationRoutes.get("/locations/:id/plan", requireUser, async (c) => {
     return c.json({ error: "Location not found." }, 404);
   }
 
-  const plan = await presentLocationPlan(db, c.get("services").assets, id);
+  const plan = await presentLocationScopedPlan(db, c.get("services").assets, id);
 
   if (!plan) {
     return c.json({ error: "Plan not found." }, 404);
@@ -259,10 +265,22 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
   let contentType: string;
   let width: number | null = null;
   let height: number | null = null;
+  let name: string | undefined;
 
   if (contentTypeHeader.includes("multipart/form-data")) {
     const body = await c.req.parseBody({ all: true });
     const file = body.plan;
+    const nameRaw = typeof body.name === "string" ? body.name : undefined;
+
+    if (nameRaw !== undefined) {
+      const nameParsed = planNameField.safeParse(nameRaw);
+
+      if (!nameParsed.success) {
+        return c.json({ error: "Name must be 1–255 characters." }, 400);
+      }
+
+      name = nameParsed.data;
+    }
 
     if (!(file instanceof File)) {
       return c.json({ error: "A plan file is required (field name: plan)." }, 400);
@@ -305,24 +323,31 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     contentType = parsed.data.contentType;
     width = parsed.data.width ?? null;
     height = parsed.data.height ?? null;
+    name = parsed.data.name;
   }
 
   const [existing] = await db
     .select({
       id: locationPlans.id,
       storageKey: locationPlans.storageKey,
+      name: locationPlans.name,
     })
     .from(locationPlans)
     .where(eq(locationPlans.locationId, id))
     .limit(1);
 
   const previousKey = existing?.storageKey ?? null;
+  const resolvedName =
+    name ??
+    existing?.name ??
+    defaultPlanName(location.name, location.locationCode);
 
   try {
     if (existing) {
       await db
         .update(locationPlans)
         .set({
+          name: resolvedName,
           storageKey,
           contentType,
           width,
@@ -333,6 +358,7 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     } else {
       await db.insert(locationPlans).values({
         locationId: id,
+        name: resolvedName,
         storageKey,
         contentType,
         width,
@@ -358,7 +384,7 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     }
   }
 
-  const plan = await presentLocationPlan(db, storage, id);
+  const plan = await presentLocationScopedPlan(db, storage, id);
 
   if (!plan) {
     throw new Error("Location plan was not saved.");
@@ -393,32 +419,13 @@ locationRoutes.put("/locations/:id/plan/features", requireUser, async (c) => {
     return c.json({ error: "Plan not found." }, 404);
   }
 
-  const childIds = new Set(await descendantRoomAreaIds(db, id));
+  const replaced = await replacePlanFeatures(db, plan.id, id, parsed.data.features);
 
-  for (const feature of parsed.data.features) {
-    if (!childIds.has(feature.locationId)) {
-      return c.json(
-        { error: `Feature location ${feature.locationId} must be a room or area under this floor.` },
-        400,
-      );
-    }
+  if (!replaced.ok) {
+    return c.json({ error: replaced.error }, 400);
   }
 
-  await db.delete(locationPlanFeatures).where(eq(locationPlanFeatures.planId, plan.id));
-
-  if (parsed.data.features.length > 0) {
-    await db.insert(locationPlanFeatures).values(
-      parsed.data.features.map((feature, index) => ({
-        planId: plan.id,
-        locationId: feature.locationId,
-        geometry: normalizeGeometry(feature.geometry),
-        labelOverride: feature.labelOverride === undefined ? null : blankToNull(feature.labelOverride),
-        sortOrder: feature.sortOrder ?? index,
-      })),
-    );
-  }
-
-  const presented = await presentLocationPlan(db, c.get("services").assets, id);
+  const presented = await presentLocationScopedPlan(db, c.get("services").assets, id);
 
   if (!presented) {
     throw new Error("Location plan was not found after updating features.");
@@ -996,155 +1003,3 @@ function blankToNull(value: string | null | undefined) {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-async function presentLocationPlan(db: Database, storage: AssetStorage, locationId: string) {
-  const [plan] = await db
-    .select({
-      id: locationPlans.id,
-      locationId: locationPlans.locationId,
-      storageKey: locationPlans.storageKey,
-      contentType: locationPlans.contentType,
-      width: locationPlans.width,
-      height: locationPlans.height,
-      createdAt: locationPlans.createdAt,
-      updatedAt: locationPlans.updatedAt,
-    })
-    .from(locationPlans)
-    .where(eq(locationPlans.locationId, locationId))
-    .limit(1);
-
-  if (!plan) {
-    return null;
-  }
-
-  const featureRows = await db
-    .select({
-      id: locationPlanFeatures.id,
-      locationId: locationPlanFeatures.locationId,
-      geometry: locationPlanFeatures.geometry,
-      labelOverride: locationPlanFeatures.labelOverride,
-      sortOrder: locationPlanFeatures.sortOrder,
-      locationCode: locations.locationCode,
-      locationName: locations.name,
-      locationType: locations.locationType,
-    })
-    .from(locationPlanFeatures)
-    .innerJoin(locations, eq(locations.id, locationPlanFeatures.locationId))
-    .where(eq(locationPlanFeatures.planId, plan.id))
-    .orderBy(asc(locationPlanFeatures.sortOrder), asc(locations.name));
-
-  const url = await storage.planUrl(plan.storageKey);
-
-  return {
-    id: plan.id,
-    locationId: plan.locationId,
-    url,
-    contentType: plan.contentType,
-    width: plan.width,
-    height: plan.height,
-    features: featureRows.map((feature) => ({
-      id: feature.id,
-      locationId: feature.locationId,
-      location: {
-        id: feature.locationId,
-        locationCode: feature.locationCode,
-        name: feature.locationName,
-        locationType: feature.locationType,
-      },
-      geometry: feature.geometry,
-      labelOverride: feature.labelOverride,
-      sortOrder: feature.sortOrder,
-    })),
-    createdAt: plan.createdAt,
-    updatedAt: plan.updatedAt,
-  };
-}
-
-async function descendantRoomAreaIds(db: Database, floorId: string) {
-  const ids: string[] = [];
-  let frontier = [floorId];
-
-  while (frontier.length > 0) {
-    const children = await db
-      .select({
-        id: locations.id,
-        locationType: locations.locationType,
-      })
-      .from(locations)
-      .where(inArray(locations.parentLocationId, frontier));
-
-    frontier = [];
-
-    for (const child of children) {
-      if (child.locationType === "room" || child.locationType === "area") {
-        ids.push(child.id);
-      }
-
-      if (child.locationType === "area" || child.locationType === "floor" || child.locationType === "building") {
-        frontier.push(child.id);
-      }
-    }
-  }
-
-  return ids;
-}
-
-function normalizeGeometry(geometry: {
-  type: "Polygon";
-  coordinates: number[][][];
-}): PlanFeatureGeometry {
-  return {
-    type: "Polygon",
-    coordinates: geometry.coordinates.map((ring) => ring.map((point) => [Number(point[0]), Number(point[1])])),
-  };
-}
-
-function planContentType(bytes: Uint8Array, declaredType: string) {
-  if (bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
-    return "application/pdf";
-  }
-
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return "image/jpeg";
-  }
-
-  if (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47 &&
-    bytes[4] === 0x0d &&
-    bytes[5] === 0x0a &&
-    bytes[6] === 0x1a &&
-    bytes[7] === 0x0a
-  ) {
-    return "image/png";
-  }
-
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  ) {
-    return "image/webp";
-  }
-
-  const normalized = declaredType.split(";")[0]?.trim().toLowerCase() ?? "";
-
-  if (
-    normalized === "application/pdf" ||
-    normalized === "image/jpeg" ||
-    normalized === "image/png" ||
-    normalized === "image/webp"
-  ) {
-    return normalized;
-  }
-
-  return null;
-}

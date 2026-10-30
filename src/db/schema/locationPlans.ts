@@ -9,6 +9,7 @@ export const locationPlans = pgTable(
     locationId: uuid("location_id")
       .notNull()
       .references(() => locations.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 255 }).notNull(),
     storageKey: varchar("storage_key", { length: 512 }).notNull(),
     contentType: varchar("content_type", { length: 100 }).notNull(),
     width: integer("width"),
