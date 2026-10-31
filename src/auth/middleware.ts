@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { withAuditedConnection } from "../db/auditContext.js";
 import type { AppEnv } from "../types.js";
 import { findUserBySession } from "./session.js";
 
@@ -10,7 +11,7 @@ export const requireUser: MiddlewareHandler<AppEnv> = async (c, next) => {
   }
 
   c.set("user", user);
-  await next();
+  return withAuditedConnection(c.get("services").pool, user, () => next());
 };
 
 export function requirePermission(permission: string) {
@@ -30,6 +31,6 @@ export function requireAnyPermission(...required: string[]): MiddlewareHandler<A
     }
 
     c.set("user", user);
-    await next();
+    return withAuditedConnection(c.get("services").pool, user, () => next());
   };
 }

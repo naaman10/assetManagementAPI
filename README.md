@@ -36,6 +36,7 @@ src/
   routes/roles.ts        role management
   routes/permissions.ts  permission catalog
   routes/clients.ts      clients, contacts, logos, and settings
+  routes/activity.ts     client activity and entity audit history
   routes/sites.ts        client sites
   routes/search.ts       site, location, asset, and work order search
   routes/locations.ts    site locations
@@ -139,6 +140,18 @@ Passwords are sent only to create or update a user. Responses never include them
 Create a user with `{ "email", "password", "name", "roleIds" }`. `name` and `roleIds` are optional. `roleIds` may contain one role or several. Update a user with any of `{ "email", "password", "name", "disabled", "roleIds" }`. `roleIds` replaces the user's roles. Create a role with `{ "name", "description", "permissionIds" }`. `permissionIds` must be ids returned by `GET /permissions`.
 
 A user response is `{ "id", "email", "name", "picture", "disabled", "roles", "permissions", "createdAt", "updatedAt" }`. A role response includes its permissions. Invalid JSON or fields return `400`. A duplicate email or role name returns `409`.
+
+## Activity and audit history
+
+Creates, updates, and deletes are stored in one append-only log. Recent activity is a grouped read of that log. History starts when this version is deployed. Older rows are not backfilled.
+
+A signed-in user's changes are attributed to that user. One request shares a `requestId`, including cascade deletes, so a single save can be shown as one activity item. Updates store `before`, `after`, and `changes`. `changes` is `{ "field": { "from", "to" } }` for columns that actually changed. `created_at` and `updated_at` alone do not create a history row. Sessions and reference counters are not audited.
+
+`GET /clients/:clientId/activity` requires `clients:view` and client access. Unknown or hidden clients return `404`. `limit` defaults to 50 and cannot be higher than 100. `cursor` is the `nextCursor` from the previous page. The response is `{ "activity", "nextCursor" }`. `nextCursor` is null on the last page. Each activity item is `{ "id", "requestId", "occurredAt", "actor", "summary", "events" }`. `actor` is `{ "id", "email", "name" }`. Each event is `{ "id", "occurredAt", "action", "entityType", "entityId", "entityLabel", "subjectType", "subjectId", "scope", "changes" }` and does not include `before` or `after`. `action` is `created`, `updated`, or `deleted`. `summary` is a short sentence such as "Alex updated asset PUMP-3 · status, manufacturer".
+
+`GET /audit-events/:entityType/:entityId` requires a signed-in user. It returns the flat history for that record, newest first, as `{ "events", "nextCursor" }`. Each event includes the activity fields plus `requestId`, `actor`, `before`, and `after`. Client-owned records use the same client access check as the rest of the API. A missing record, or a record the user cannot see, returns `404`. Catalog, user, and role history requires the matching view permission (`assetType:view`, `users:view`, `roles:view`, and the same pattern for the other global catalogs). An admin can read those histories. Missing permission returns `403`. `limit` and `cursor` work the same way as client activity.
+
+The actor is who saved the change. `maintenance_history.performedBy` is still who carried out the work.
 
 ## Asset types
 

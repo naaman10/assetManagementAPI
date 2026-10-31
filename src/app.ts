@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { env } from "./config/env.js";
+import { activityRoutes } from "./routes/activity.js";
 import { assetRoutes } from "./routes/assets.js";
 import { assetCommentRoutes } from "./routes/assetComments.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -48,6 +49,7 @@ export function createApp(services: Services) {
   app.route("/", auth);
   app.route("/", userRoutes);
   app.route("/", clientRoutes);
+  app.route("/", activityRoutes);
   app.route("/", siteRoutes);
   app.route("/", searchRoutes);
   app.route("/", locationRoutes);

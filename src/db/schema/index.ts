@@ -1,3 +1,5 @@
+export { auditControl, auditEvents } from "./auditEvents.js";
+export type { AuditChange, AuditChanges, AuditScope } from "./auditEvents.js";
 export { ASSET_STATUSES, assets } from "./assets.js";
 export { assetCommentMentions, assetComments } from "./assetComments.js";
 export {

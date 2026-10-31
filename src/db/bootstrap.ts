@@ -1,7 +1,7 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Env } from "../config/env.js";
 import type { Database } from "./types.js";
-import { permissions, projectTypeFieldDefinitions, rolePermissions, roles, userRoles, users } from "./schema/index.js";
+import { auditControl, permissions, projectTypeFieldDefinitions, rolePermissions, roles, userRoles, users } from "./schema/index.js";
 import { ADMIN_ROLE, CLIENTS_CREATE, CLIENTS_EDIT, CLIENTS_VIEW, LEGACY_PERMISSIONS, SEEDED_PERMISSIONS } from "../auth/catalog.js";
 import { hasEnabledManager } from "../auth/access.js";
 import { Auth0RequestError } from "../auth/management.js";
@@ -10,66 +10,76 @@ import { PROJECT_TYPE_FIELD_DEFINITIONS } from "./projectTypeFieldCatalog.js";
 
 export async function ensureAccess(env: Env, services: Services) {
   const db = services.db;
-  await db
-    .insert(permissions)
-    .values(SEEDED_PERMISSIONS.map((permission) => ({ ...permission })))
-    .onConflictDoNothing({ target: permissions.name });
+  await setAuditEnabled(db, false);
 
-  await ensureProjectTypeFieldDefinitions(db);
-
-  for (const name of [CLIENTS_VIEW, CLIENTS_CREATE, CLIENTS_EDIT]) {
-    const permission = SEEDED_PERMISSIONS.find((item) => item.name === name);
-
-    if (permission) {
-      await db.update(permissions).set({ description: permission.description }).where(eq(permissions.name, name));
-    }
-  }
-
-  await replaceLegacyPermissions(db);
-
-  const adminRoleId = await ensureAdminRole(db);
-
-  if (await hasEnabledManager(db)) {
-    return;
-  }
-
-  if (!env.BOOTSTRAP_ADMIN_EMAIL || !env.BOOTSTRAP_ADMIN_PASSWORD) {
-    console.warn(
-      "No enabled user can edit users and roles. Set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD to create the first admin.",
-    );
-    return;
-  }
-
-  const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-  const auth0Sub = await findOrCreateLogin(services, email, env.BOOTSTRAP_ADMIN_PASSWORD);
-  const [local] = await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.email, email)).limit(1);
-  let userId = local?.id;
-
-  if (local) {
+  try {
     await db
-      .update(users)
-      .set({
-        auth0Sub,
-        disabled: false,
-        name: local.name ?? "Admin",
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, local.id));
-  } else {
-    const [created] = await db
-      .insert(users)
-      .values({ email, name: "Admin", auth0Sub })
-      .returning({ id: users.id });
+      .insert(permissions)
+      .values(SEEDED_PERMISSIONS.map((permission) => ({ ...permission })))
+      .onConflictDoNothing({ target: permissions.name });
 
-    if (!created) {
-      throw new Error("Bootstrap admin was not created.");
+    await ensureProjectTypeFieldDefinitions(db);
+
+    for (const name of [CLIENTS_VIEW, CLIENTS_CREATE, CLIENTS_EDIT]) {
+      const permission = SEEDED_PERMISSIONS.find((item) => item.name === name);
+
+      if (permission) {
+        await db.update(permissions).set({ description: permission.description }).where(eq(permissions.name, name));
+      }
     }
 
-    userId = created.id;
-  }
+    await replaceLegacyPermissions(db);
 
-  await db.insert(userRoles).values({ userId, roleId: adminRoleId }).onConflictDoNothing();
-  console.log("Bootstrap admin is ready.");
+    const adminRoleId = await ensureAdminRole(db);
+
+    if (await hasEnabledManager(db)) {
+      return;
+    }
+
+    if (!env.BOOTSTRAP_ADMIN_EMAIL || !env.BOOTSTRAP_ADMIN_PASSWORD) {
+      console.warn(
+        "No enabled user can edit users and roles. Set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD to create the first admin.",
+      );
+      return;
+    }
+
+    const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+    const auth0Sub = await findOrCreateLogin(services, email, env.BOOTSTRAP_ADMIN_PASSWORD);
+    const [local] = await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.email, email)).limit(1);
+    let userId = local?.id;
+
+    if (local) {
+      await db
+        .update(users)
+        .set({
+          auth0Sub,
+          disabled: false,
+          name: local.name ?? "Admin",
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, local.id));
+    } else {
+      const [created] = await db
+        .insert(users)
+        .values({ email, name: "Admin", auth0Sub })
+        .returning({ id: users.id });
+
+      if (!created) {
+        throw new Error("Bootstrap admin was not created.");
+      }
+
+      userId = created.id;
+    }
+
+    await db.insert(userRoles).values({ userId, roleId: adminRoleId }).onConflictDoNothing();
+    console.log("Bootstrap admin is ready.");
+  } finally {
+    await setAuditEnabled(db, true);
+  }
+}
+
+async function setAuditEnabled(db: Database, enabled: boolean) {
+  await db.update(auditControl).set({ enabled }).where(eq(auditControl.id, true));
 }
 
 async function ensureProjectTypeFieldDefinitions(db: Database) {
