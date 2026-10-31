@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { activitySummary, actorDisplayName } from "./auditSummary.js";
 import { CATALOG_ENTITY_PERMISSION, CLIENT_ENTITY_TYPES } from "./auditedTables.js";
@@ -222,6 +222,63 @@ export async function listClientActivity(
     activity,
     nextCursor: hasMore && last ? `${last.occurred_at_text}|${last.head_id}` : null,
   };
+}
+
+const PROJECT_ACTIVITY_LIMIT = 5;
+
+export async function listProjectActivity(db: Database, projectId: string) {
+  const rows = await db
+    .select({
+      id: auditEvents.id,
+      occurredAt: auditEvents.occurredAt,
+      actorUserId: auditEvents.actorUserId,
+      actorEmail: auditEvents.actorEmail,
+      actorName: auditEvents.actorName,
+      action: auditEvents.action,
+      entityType: auditEvents.entityType,
+      entityId: auditEvents.entityId,
+      entityLabel: auditEvents.entityLabel,
+      changes: auditEvents.changes,
+    })
+    .from(auditEvents)
+    .where(
+      or(
+        and(eq(auditEvents.entityType, "projects"), eq(auditEvents.entityId, projectId)),
+        and(eq(auditEvents.entityType, "project_assets"), sql`${auditEvents.scope}->>'projectId' = ${projectId}`),
+      ),
+    )
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+    .limit(PROJECT_ACTIVITY_LIMIT);
+
+  return rows.map((event) => {
+    const actor = {
+      id: event.actorUserId,
+      email: event.actorEmail,
+      name: event.actorName,
+    };
+    const changes = asChanges(event.changes);
+
+    return {
+      id: event.id,
+      occurredAt: event.occurredAt,
+      action: event.action,
+      entityType: event.entityType,
+      entityId: event.entityId,
+      entityLabel: event.entityLabel,
+      summary: activitySummary(actorDisplayName(actor), [
+        {
+          id: event.id,
+          occurredAt: event.occurredAt,
+          action: event.action,
+          entityType: event.entityType,
+          entityLabel: event.entityLabel,
+          changes,
+        },
+      ]),
+      actor,
+      changes,
+    };
+  });
 }
 
 export async function listEntityHistory(

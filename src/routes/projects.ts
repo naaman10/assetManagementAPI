@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { listProjectActivity } from "../db/auditQuery.js";
 import { deleteUnconductedSurveys } from "../db/deleteUnconductedSurveys.js";
 import { removeSurveyPhotos } from "../db/surveyPhotoObjects.js";
 import {
@@ -220,13 +221,19 @@ projectRoutes.get("/projects/:id", requireUser, async (c) => {
     return c.json({ error: "Project not found." }, 404);
   }
 
-  const project = await loadProject(c.get("services").db, c.get("user"), id);
+  const db = c.get("services").db;
+  const project = await loadProject(db, c.get("user"), id);
 
   if (!project) {
     return c.json({ error: "Project not found." }, 404);
   }
 
-  return c.json({ project });
+  return c.json({
+    project: {
+      ...project,
+      recentActivity: await listProjectActivity(db, id),
+    },
+  });
 });
 
 const updateProjectAssetReviewSchema = z.object({
