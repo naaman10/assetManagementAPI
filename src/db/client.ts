@@ -8,7 +8,7 @@ export function createDatabase(connectionString: string) {
   const root = drizzle({ client: pool, schema });
   const db = new Proxy(root, {
     get(target, prop) {
-      const current = auditStorage.getStore() ?? target;
+      const current = auditStorage.getStore()?.db ?? target;
       const value = Reflect.get(current, prop, current);
       return typeof value === "function" ? value.bind(current) : value;
     },
