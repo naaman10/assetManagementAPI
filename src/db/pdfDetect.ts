@@ -8,13 +8,27 @@ import {
 
 const MAX_CANDIDATES = 200;
 const MAX_POINTS_PER_RING = 200;
-const MIN_VERTICES = 3;
-const MAX_VERTICES = 32;
-const MIN_AREA = 0.0005;
-const MAX_AREA = 0.8;
+const MIN_VERTICES = 4;
+const MAX_VERTICES = 24;
+/** Room footprints: ignore tiny symbols and near-full-page frames. */
+const MIN_AREA = 0.005;
+const MAX_AREA = 0.35;
+/** Closed boxes without a door gap need to be larger (or labeled) to count as rooms. */
+const MIN_CLOSED_UNLABELED_AREA = 0.015;
 const BEZIER_STEPS = 8;
 const NEAREST_TEXT_THRESHOLD = 0.02;
 const COLLINEAR_EPSILON = 1e-6;
+/** Door opening as a fraction of the room perimeter. */
+const MIN_DOOR_GAP_FRAC = 0.01;
+const MAX_DOOR_GAP_FRAC = 0.25;
+/** Nearly-closed open paths: gap vs page diagonal (absolute door width band). */
+const MIN_DOOR_GAP_DIAG = 0.004;
+const MAX_DOOR_GAP_DIAG = 0.08;
+const MIN_RECTANGULARITY = 0.55;
+const MIN_AXIS_ALIGNED = 0.7;
+const MAX_ASPECT = 6;
+const MIN_ROOM_SCORE = 0.62;
+const AXIS_ANGLE_TOL_DEG = 12;
 
 /** DrawOPS packed into constructPath path buffers (pdf.js). */
 const DrawOPS = {
@@ -56,8 +70,11 @@ type PageText = {
   y: number;
 };
 
-type RawClosedPath = {
+type RawPath = {
   points: Point[];
+  /** Explicit PDF closePath vs nearly-closed wall loop (door gap). */
+  closedExplicitly: boolean;
+  doorGap: number | null;
 };
 
 export class PdfDetectError extends Error {
@@ -110,7 +127,11 @@ export async function detectRoomsFromPdfBytes(
       throw new PdfDetectError("PDF page has an invalid size.");
     }
 
-    const { closedPaths, pathOpCount, imageOpCount } = await extractClosedPaths(page);
+    const pageArea = pageWidth * pageHeight;
+    const pageDiagonalLen = Math.hypot(pageWidth, pageHeight);
+    const nearestThreshold = NEAREST_TEXT_THRESHOLD * pageDiagonalLen;
+
+    const { paths, pathOpCount, imageOpCount } = await extractRoomPaths(page, pageDiagonalLen);
     const texts = await extractTexts(page);
 
     if (pathOpCount === 0) {
@@ -122,59 +143,100 @@ export async function detectRoomsFromPdfBytes(
       throw new PdfDetectError("No vector paths found on page 1.");
     }
 
-    if (closedPaths.length === 0) {
-      notes.push("Vector paths were found, but none were closed polygons.");
+    if (paths.length === 0) {
+      notes.push(
+        "Vector paths were found, but none looked like closed or nearly-closed wall loops (rooms with door gaps).",
+      );
     }
 
-    const pageArea = pageWidth * pageHeight;
-    const pageDiagonal = Math.hypot(pageWidth, pageHeight);
-    const nearestThreshold = NEAREST_TEXT_THRESHOLD * pageDiagonal;
+    notes.push(
+      "Candidates are filtered to axis-aligned, room-sized wall loops (including door openings).",
+    );
 
-    const candidates: PdfDetectCandidate[] = [];
-    let capped = false;
+    type Scored = PdfDetectCandidate & { score: number };
+    const scored: Scored[] = [];
+    let rejected = 0;
 
-    for (const closed of closedPaths) {
-      if (candidates.length >= MAX_CANDIDATES) {
-        capped = true;
-        break;
-      }
-
-      const simplified = simplifyCollinear(closed.points);
+    for (const path of paths) {
+      const simplified = simplifyCollinear(path.points);
       if (simplified.length < MIN_VERTICES || simplified.length > MAX_VERTICES) {
+        rejected += 1;
         continue;
       }
 
       const areaAbs = Math.abs(polygonArea(simplified));
       const areaNorm = areaAbs / pageArea;
       if (areaNorm < MIN_AREA || areaNorm > MAX_AREA) {
+        rejected += 1;
+        continue;
+      }
+
+      const metrics = roomMetrics(simplified, path.doorGap, pageDiagonalLen);
+      if (!metrics) {
+        rejected += 1;
         continue;
       }
 
       const ringPdf = closeRing(simplified.slice(0, MAX_POINTS_PER_RING));
-      const ringNorm = ringPdf.map(([x, y]) => normalizePoint(x, y, pageWidth, pageHeight));
-      const bbox = bboxOf(ringNorm);
       const label = suggestLabel(ringPdf, texts, nearestThreshold);
 
-      candidates.push({
+      // Prefer wall loops with door openings; plain closed boxes need a label or more area.
+      if (
+        !metrics.hasDoorGap &&
+        !label.value &&
+        areaNorm < MIN_CLOSED_UNLABELED_AREA
+      ) {
+        rejected += 1;
+        continue;
+      }
+
+      const score = roomScore(metrics, Boolean(label.value), path.closedExplicitly);
+
+      if (score < MIN_ROOM_SCORE) {
+        rejected += 1;
+        continue;
+      }
+
+      const ringNorm = ringPdf.map(([x, y]) => normalizePoint(x, y, pageWidth, pageHeight));
+      const confidence = refineConfidence(label.confidence, metrics, score);
+
+      scored.push({
         geometry: {
           type: "Polygon",
           coordinates: [ringNorm],
         },
         suggestedLabel: label.value,
-        confidence: label.confidence,
+        confidence,
         pointCount: ringNorm.length - 1,
         area: Number(areaNorm.toFixed(6)),
-        bbox,
+        bbox: bboxOf(ringNorm),
+        score,
       });
     }
 
-    if (capped) {
+    scored.sort((a, b) => b.score - a.score);
+    const candidates = dedupeOverlapping(scored)
+      .slice(0, MAX_CANDIDATES)
+      .map((entry) => ({
+        geometry: entry.geometry,
+        suggestedLabel: entry.suggestedLabel,
+        confidence: entry.confidence,
+        pointCount: entry.pointCount,
+        area: entry.area,
+        bbox: entry.bbox,
+      }));
+
+    if (scored.length > MAX_CANDIDATES) {
       notes.push(`Candidate list capped at ${MAX_CANDIDATES}.`);
+    }
+
+    if (rejected > 0) {
+      notes.push(`Filtered out ${rejected} non-room-like shape(s) (furniture, frames, symbols, etc.).`);
     }
 
     if (candidates.length === 0) {
       notes.push(
-        "No room candidates passed size/vertex filters. The plan may use open walls, hatches, or complex path styles.",
+        "No room candidates passed wall/door filters. The plan may use open wall networks, hatches, or non-axis-aligned outlines.",
       );
     }
 
@@ -195,9 +257,9 @@ export async function detectRoomsFromPdfBytes(
   }
 }
 
-async function extractClosedPaths(page: PDFPageProxy) {
+async function extractRoomPaths(page: PDFPageProxy, pageDiagonal: number) {
   const opList = await page.getOperatorList();
-  const closedPaths: RawClosedPath[] = [];
+  const paths: RawPath[] = [];
   let pathOpCount = 0;
   let imageOpCount = 0;
 
@@ -242,14 +304,11 @@ async function extractClosedPaths(page: PDFPageProxy) {
         if (!(buffer instanceof Float32Array)) {
           continue;
         }
-        for (const points of decodeDrawOps(buffer, ctm)) {
-          closedPaths.push({ points });
-        }
+        paths.push(...decodeDrawOps(buffer, ctm, pageDiagonal));
       }
       continue;
     }
 
-    // Older / rare individual path ops.
     if (
       fn === OPS.moveTo ||
       fn === OPS.lineTo ||
@@ -263,25 +322,47 @@ async function extractClosedPaths(page: PDFPageProxy) {
     }
   }
 
-  return { closedPaths, pathOpCount, imageOpCount };
+  return { paths, pathOpCount, imageOpCount };
 }
 
-function decodeDrawOps(data: ArrayLike<number>, ctm: number[]): Point[][] {
-  const closed: Point[][] = [];
+function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: number): RawPath[] {
+  const out: RawPath[] = [];
   let current: Point[] = [];
   let start: Point | null = null;
   let i = 0;
 
   const apply = (x: number, y: number): Point => applyTransformPoint(x, y, ctm);
 
+  const flushOpen = () => {
+    if (current.length < MIN_VERTICES || !start) {
+      current = [];
+      start = null;
+      return;
+    }
+
+    const end = current[current.length - 1];
+    const gap = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    const minGap = MIN_DOOR_GAP_DIAG * pageDiagonal;
+    const maxGap = MAX_DOOR_GAP_DIAG * pageDiagonal;
+
+    // Nearly-closed wall loop with a door-sized opening.
+    if (gap >= minGap && gap <= maxGap) {
+      out.push({ points: current, closedExplicitly: false, doorGap: gap });
+    } else if (gap <= minGap) {
+      // Effectively closed without closePath.
+      out.push({ points: current, closedExplicitly: false, doorGap: null });
+    }
+
+    current = [];
+    start = null;
+  };
+
   while (i < data.length) {
     const op = data[i++];
 
     switch (op) {
       case DrawOPS.moveTo: {
-        if (current.length >= MIN_VERTICES) {
-          // Unclosed leftover — ignore for room detection.
-        }
+        flushOpen();
         const x = data[i++];
         const y = data[i++];
         start = apply(x, y);
@@ -325,19 +406,182 @@ function decodeDrawOps(data: ArrayLike<number>, ctm: number[]): Point[][] {
       }
       case DrawOPS.closePath: {
         if (current.length >= MIN_VERTICES) {
-          closed.push(current);
+          // Closed loops are kept only if they look like wall boxes; door bonus
+          // comes from nearly-closed open paths (gap in the wall), not short edges.
+          out.push({
+            points: current,
+            closedExplicitly: true,
+            doorGap: null,
+          });
         }
         current = [];
         start = null;
         break;
       }
       default:
-        // Unknown opcode — abort this buffer safely.
-        return closed;
+        flushOpen();
+        return out;
     }
   }
 
-  return closed;
+  flushOpen();
+  return out;
+}
+
+type RoomMetrics = {
+  rectangularity: number;
+  axisAligned: number;
+  aspect: number;
+  hasDoorGap: boolean;
+  doorGapFrac: number | null;
+};
+
+function roomMetrics(points: Point[], doorGap: number | null, pageDiagonal: number): RoomMetrics | null {
+  const areaAbs = Math.abs(polygonArea(points));
+  const bbox = bboxOf(points);
+  const bw = Math.max(bbox.maxX - bbox.minX, COLLINEAR_EPSILON);
+  const bh = Math.max(bbox.maxY - bbox.minY, COLLINEAR_EPSILON);
+  const bboxArea = bw * bh;
+  const rectangularity = Math.min(1, areaAbs / bboxArea);
+  const aspect = Math.max(bw / bh, bh / bw);
+  const axisAligned = axisAlignedEdgeRatio(points);
+  const perimeter = polygonPerimeter(points);
+
+  let hasDoorGap = false;
+  let doorGapFrac: number | null = null;
+
+  if (doorGap != null && perimeter > 0) {
+    doorGapFrac = doorGap / perimeter;
+    hasDoorGap =
+      doorGapFrac >= MIN_DOOR_GAP_FRAC &&
+      doorGapFrac <= MAX_DOOR_GAP_FRAC &&
+      doorGap >= MIN_DOOR_GAP_DIAG * pageDiagonal &&
+      doorGap <= MAX_DOOR_GAP_DIAG * pageDiagonal;
+  }
+
+  if (rectangularity < MIN_RECTANGULARITY) {
+    return null;
+  }
+
+  if (axisAligned < MIN_AXIS_ALIGNED) {
+    return null;
+  }
+
+  if (aspect > MAX_ASPECT) {
+    return null;
+  }
+
+  return { rectangularity, axisAligned, aspect, hasDoorGap, doorGapFrac };
+}
+
+function roomScore(metrics: RoomMetrics, hasLabel: boolean, closedExplicitly: boolean) {
+  let score = 0;
+  score += 0.35 * metrics.rectangularity;
+  score += 0.3 * metrics.axisAligned;
+  score += 0.1 * Math.max(0, 1 - (metrics.aspect - 1) / (MAX_ASPECT - 1));
+
+  if (metrics.hasDoorGap) {
+    score += 0.18;
+  } else if (closedExplicitly) {
+    // Fully closed room outline without an obvious door gap — still valid but weaker.
+    score += 0.08;
+  }
+
+  if (hasLabel) {
+    score += 0.12;
+  }
+
+  return score;
+}
+
+function refineConfidence(
+  labelConfidence: PdfDetectConfidence,
+  metrics: RoomMetrics,
+  score: number,
+): PdfDetectConfidence {
+  if (metrics.hasDoorGap && hasStrongRoomShape(metrics) && labelConfidence === "high") {
+    return "high";
+  }
+
+  if (score >= 0.8 && labelConfidence !== "low") {
+    return labelConfidence === "high" ? "high" : "medium";
+  }
+
+  if (metrics.hasDoorGap && hasStrongRoomShape(metrics)) {
+    return labelConfidence === "low" ? "medium" : labelConfidence;
+  }
+
+  return labelConfidence;
+}
+
+function hasStrongRoomShape(metrics: RoomMetrics) {
+  return metrics.rectangularity >= 0.7 && metrics.axisAligned >= 0.85;
+}
+
+function axisAlignedEdgeRatio(points: Point[]) {
+  let aligned = 0;
+  let total = 0;
+  const tol = (AXIS_ANGLE_TOL_DEG * Math.PI) / 180;
+
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy);
+    if (len < COLLINEAR_EPSILON) {
+      continue;
+    }
+
+    total += len;
+    const angle = Math.abs(Math.atan2(dy, dx));
+    const toHoriz = Math.min(angle, Math.PI - angle);
+    const toVert = Math.abs(angle - Math.PI / 2);
+    if (toHoriz <= tol || toVert <= tol) {
+      aligned += len;
+    }
+  }
+
+  return total > 0 ? aligned / total : 0;
+}
+
+function polygonPerimeter(points: Point[]) {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    sum += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  return sum;
+}
+
+function dedupeOverlapping(candidates: Array<PdfDetectCandidate & { score: number }>) {
+  const kept: Array<PdfDetectCandidate & { score: number }> = [];
+
+  for (const candidate of candidates) {
+    const overlaps = kept.some((existing) => bboxOverlapRatio(existing.bbox, candidate.bbox) >= 0.65);
+    if (!overlaps) {
+      kept.push(candidate);
+    }
+  }
+
+  return kept;
+}
+
+function bboxOverlapRatio(
+  a: PdfDetectCandidate["bbox"],
+  b: PdfDetectCandidate["bbox"],
+) {
+  const xOverlap = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
+  const yOverlap = Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
+  const intersection = xOverlap * yOverlap;
+  if (intersection <= 0) {
+    return 0;
+  }
+
+  const areaA = Math.max(COLLINEAR_EPSILON, (a.maxX - a.minX) * (a.maxY - a.minY));
+  const areaB = Math.max(COLLINEAR_EPSILON, (b.maxX - b.minX) * (b.maxY - b.minY));
+  return intersection / Math.min(areaA, areaB);
 }
 
 async function extractTexts(page: PDFPageProxy): Promise<PageText[]> {
