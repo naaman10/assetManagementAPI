@@ -2,6 +2,7 @@ import { and, asc, eq, isNull, SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
+import { syncSitePlanApsTranslation } from "../aps/sitePlanAps.js";
 import { clientIsVisible } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { removeHistoryPhotos } from "../db/historyPhotoObjects.js";
@@ -260,12 +261,15 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
   }
 
   const contentTypeHeader = c.req.header("content-type") ?? "";
-  const storage = c.get("services").assets;
+  const services = c.get("services");
+  const storage = services.assets;
   let storageKey: string;
   let contentType: string;
   let width: number | null = null;
   let height: number | null = null;
   let name: string | undefined;
+  let uploadedBytes: Uint8Array | undefined;
+  let planSourceChanged = false;
 
   if (contentTypeHeader.includes("multipart/form-data")) {
     const body = await c.req.parseBody({ all: true });
@@ -298,10 +302,18 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     }
 
     contentType = detected;
-    const planId = crypto.randomUUID();
+    uploadedBytes = bytes;
+    planSourceChanged = true;
+    const uploadPlanId = crypto.randomUUID();
 
     try {
-      storageKey = await storage.putLocationPlan(location.client.id, id, planId, bytes, contentType);
+      storageKey = await storage.putLocationPlan(
+        location.client.id,
+        id,
+        uploadPlanId,
+        bytes,
+        contentType,
+      );
     } catch (error) {
       if (error instanceof AssetStorageError) {
         return c.json({ error: error.message }, 503);
@@ -324,6 +336,7 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     width = parsed.data.width ?? null;
     height = parsed.data.height ?? null;
     name = parsed.data.name;
+    planSourceChanged = true;
   }
 
   const [existing] = await db
@@ -341,6 +354,7 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     name ??
     existing?.name ??
     defaultPlanName(location.name, location.locationCode);
+  const planId = existing?.id ?? crypto.randomUUID();
 
   try {
     if (existing) {
@@ -357,6 +371,7 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
         .where(eq(locationPlans.id, existing.id));
     } else {
       await db.insert(locationPlans).values({
+        id: planId,
         locationId: id,
         name: resolvedName,
         storageKey,
@@ -382,6 +397,19 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     } catch (error) {
       console.error("Failed to remove previous location plan object", error);
     }
+  }
+
+  if (planSourceChanged) {
+    await syncSitePlanApsTranslation({
+      aps: services.aps,
+      db,
+      storage,
+      planId,
+      clientId: location.client.id,
+      contentType,
+      storageKey,
+      bytes: uploadedBytes,
+    });
   }
 
   const plan = await presentLocationScopedPlan(db, storage, id);

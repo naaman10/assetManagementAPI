@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
+import { refreshSitePlanApsStatus, syncSitePlanApsTranslation } from "../aps/sitePlanAps.js";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { CadInspectError, inspectDwgBytes } from "../db/cadInspect.js";
@@ -61,6 +62,10 @@ sitePlanRoutes.get("/site-plans", requireUser, async (c) => {
       contentType: locationPlans.contentType,
       width: locationPlans.width,
       height: locationPlans.height,
+      apsObjectKey: locationPlans.apsObjectKey,
+      apsUrn: locationPlans.apsUrn,
+      apsTranslationStatus: locationPlans.apsTranslationStatus,
+      apsTranslationError: locationPlans.apsTranslationError,
       createdAt: locationPlans.createdAt,
       updatedAt: locationPlans.updatedAt,
       locationCode: locations.locationCode,
@@ -90,13 +95,24 @@ sitePlanRoutes.get("/site-plans/:id", requireUser, async (c) => {
   }
 
   const db = c.get("services").db;
-  const row = await loadVisiblePlan(db, c.get("user"), id);
+  const services = c.get("services");
+  let row = await loadVisiblePlan(db, c.get("user"), id);
 
   if (!row) {
     return c.json({ error: "Site plan not found." }, 404);
   }
 
-  const sitePlan = await presentPlanDetail(db, c.get("services").assets, row);
+  await refreshSitePlanApsStatus({
+    aps: services.aps,
+    db,
+    planId: row.id,
+    apsUrn: row.apsUrn,
+    apsTranslationStatus: row.apsTranslationStatus,
+  });
+
+  row = (await loadVisiblePlan(db, c.get("user"), id)) ?? row;
+
+  const sitePlan = await presentPlanDetail(db, services.assets, row);
   return c.json({ sitePlan });
 });
 
@@ -140,6 +156,125 @@ sitePlanRoutes.get("/site-plans/:id/cad-inspect", requireUser, async (c) => {
     console.error("Unexpected CAD inspect failure", error);
     return c.json({ error: "Failed to inspect DWG." }, 422);
   }
+});
+
+sitePlanRoutes.get("/site-plans/:id/viewer", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  const services = c.get("services");
+  const db = services.db;
+  let row = await loadVisiblePlan(db, c.get("user"), id);
+
+  if (!row) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  if (row.contentType !== PLAN_ACAD_CONTENT_TYPE) {
+    return c.json({ error: "APS Viewer is only available for DWG site plans." }, 400);
+  }
+
+  if (!services.aps.configured) {
+    return c.json({ error: "Autodesk Platform Services is not configured." }, 503);
+  }
+
+  await refreshSitePlanApsStatus({
+    aps: services.aps,
+    db,
+    planId: row.id,
+    apsUrn: row.apsUrn,
+    apsTranslationStatus: row.apsTranslationStatus,
+  });
+
+  row = (await loadVisiblePlan(db, c.get("user"), id)) ?? row;
+
+  if (!row.apsUrn) {
+    return c.json(
+      {
+        error: "This DWG has not been submitted to APS yet.",
+        aps: {
+          translationStatus: row.apsTranslationStatus,
+          translationError: row.apsTranslationError,
+        },
+      },
+      409,
+    );
+  }
+
+  if (row.apsTranslationStatus !== "success") {
+    return c.json(
+      {
+        error: "APS translation is not ready yet.",
+        aps: {
+          urn: row.apsUrn,
+          translationStatus: row.apsTranslationStatus,
+          translationError: row.apsTranslationError,
+        },
+      },
+      409,
+    );
+  }
+
+  try {
+    const token = await services.aps.getViewerToken();
+    return c.json({
+      viewer: {
+        accessToken: token.accessToken,
+        expiresIn: token.expiresIn,
+        urn: row.apsUrn,
+        translationStatus: row.apsTranslationStatus,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to issue APS viewer token", error);
+    return c.json({ error: "Failed to issue APS viewer token." }, 503);
+  }
+});
+
+sitePlanRoutes.post("/site-plans/:id/aps-translate", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  const services = c.get("services");
+  const db = services.db;
+  const row = await loadVisiblePlan(db, c.get("user"), id);
+
+  if (!row) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  if (row.contentType !== PLAN_ACAD_CONTENT_TYPE) {
+    return c.json({ error: "APS translation is only available for DWG site plans." }, 400);
+  }
+
+  if (!services.aps.configured) {
+    return c.json({ error: "Autodesk Platform Services is not configured." }, 503);
+  }
+
+  await syncSitePlanApsTranslation({
+    aps: services.aps,
+    db,
+    storage: services.assets,
+    planId: row.id,
+    clientId: row.clientId,
+    contentType: row.contentType,
+    storageKey: row.storageKey,
+  });
+
+  const updated = await loadVisiblePlan(db, c.get("user"), id);
+
+  if (!updated) {
+    throw new Error("Site plan was not found after APS translate.");
+  }
+
+  const sitePlan = await presentPlanDetail(db, services.assets, updated);
+  return c.json({ sitePlan });
 });
 
 sitePlanRoutes.post("/site-plans", requireUser, async (c) => {
@@ -202,7 +337,8 @@ sitePlanRoutes.post("/site-plans", requireUser, async (c) => {
   }
 
   const planId = crypto.randomUUID();
-  const storage = c.get("services").assets;
+  const services = c.get("services");
+  const storage = services.assets;
   let storageKey: string;
 
   try {
@@ -238,6 +374,19 @@ sitePlanRoutes.post("/site-plans", requireUser, async (c) => {
     return routeError(c, error);
   }
 
+  if (contentType === PLAN_ACAD_CONTENT_TYPE) {
+    await syncSitePlanApsTranslation({
+      aps: services.aps,
+      db,
+      storage,
+      planId,
+      clientId: floor.clientId,
+      contentType,
+      storageKey,
+      bytes,
+    });
+  }
+
   const row = await loadPlanContextById(db, planId);
 
   if (!row) {
@@ -263,13 +412,16 @@ sitePlanRoutes.patch("/site-plans/:id", requireUser, async (c) => {
   }
 
   const contentTypeHeader = c.req.header("content-type") ?? "";
-  const storage = c.get("services").assets;
+  const services = c.get("services");
+  const storage = services.assets;
   let nextName = current.name;
   let nextStorageKey = current.storageKey;
   let nextContentType = current.contentType;
   let nextWidth = current.width;
   let nextHeight = current.height;
   let uploadedKey: string | null = null;
+  let uploadedBytes: Uint8Array | null = null;
+  let fileReplaced = false;
 
   if (contentTypeHeader.includes("multipart/form-data")) {
     const body = await c.req.parseBody({ all: true });
@@ -317,6 +469,8 @@ sitePlanRoutes.patch("/site-plans/:id", requireUser, async (c) => {
       nextContentType = detected;
       nextWidth = null;
       nextHeight = null;
+      uploadedBytes = bytes;
+      fileReplaced = true;
     } else if (nameRaw === undefined) {
       return c.json({ error: "Provide a name and/or plan file to update." }, 400);
     }
@@ -366,6 +520,19 @@ sitePlanRoutes.patch("/site-plans/:id", requireUser, async (c) => {
     } catch (error) {
       console.error("Failed to remove previous site plan object", error);
     }
+  }
+
+  if (fileReplaced) {
+    await syncSitePlanApsTranslation({
+      aps: services.aps,
+      db,
+      storage,
+      planId: id,
+      clientId: current.clientId,
+      contentType: nextContentType,
+      storageKey: nextStorageKey,
+      bytes: uploadedBytes ?? undefined,
+    });
   }
 
   const row = await loadPlanContextById(db, id);

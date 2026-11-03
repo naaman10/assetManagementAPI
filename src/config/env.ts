@@ -27,6 +27,9 @@ const envSchema = z.object({
   BOOTSTRAP_ADMIN_PASSWORD: optionalEnv(),
   RESEND_API_KEY: optionalEnv(),
   EMAIL_FROM: optionalEnv(),
+  APS_CLIENT_ID: optionalEnv(),
+  APS_CLIENT_SECRET: optionalEnv(),
+  APS_BUCKET: optionalEnv(),
 }).superRefine((value, ctx) => {
   const hasEmail = value.BOOTSTRAP_ADMIN_EMAIL !== undefined;
   const hasPassword = value.BOOTSTRAP_ADMIN_PASSWORD !== undefined;
@@ -52,6 +55,25 @@ const envSchema = z.object({
       code: "custom",
       message: "BOOTSTRAP_ADMIN_PASSWORD must be at least 8 characters.",
       path: ["BOOTSTRAP_ADMIN_PASSWORD"],
+    });
+  }
+
+  const apsValues = [value.APS_CLIENT_ID, value.APS_CLIENT_SECRET, value.APS_BUCKET];
+  const apsSetCount = apsValues.filter((entry) => entry !== undefined).length;
+
+  if (apsSetCount > 0 && apsSetCount < 3) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Set APS_CLIENT_ID, APS_CLIENT_SECRET, and APS_BUCKET together, or leave all unset.",
+      path: ["APS_CLIENT_ID"],
+    });
+  }
+
+  if (value.APS_BUCKET && !/^[a-z0-9_]{3,128}$/.test(value.APS_BUCKET)) {
+    ctx.addIssue({
+      code: "custom",
+      message: "APS_BUCKET must be 3–128 characters of lowercase letters, numbers, or underscores.",
+      path: ["APS_BUCKET"],
     });
   }
 });

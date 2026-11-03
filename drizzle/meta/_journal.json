@@ -253,6 +253,13 @@
       "when": 1793790000000,
       "tag": "0035_audit_events",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793870000000,
+      "tag": "0036_location_plan_aps",
+      "breakpoints": true
     }
   ]
 }

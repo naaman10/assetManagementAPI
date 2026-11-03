@@ -1,3 +1,4 @@
+import { createApsClient } from "./aps/client.js";
 import { createAuth0 } from "./auth/auth0.js";
 import { createAuth0Management } from "./auth/management.js";
 import type { Env } from "./config/env.js";
@@ -15,6 +16,7 @@ export function createServices(env: Env) {
     auth0: createAuth0(env),
     auth0Management: createAuth0Management(env),
     assets: createAssetStorage(env),
+    aps: createApsClient(env),
   };
 }
 

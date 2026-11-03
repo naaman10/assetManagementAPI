@@ -20,26 +20,32 @@ export type PlanFeatureInput = {
   sortOrder?: number;
 };
 
+const planContextSelect = {
+  id: locationPlans.id,
+  name: locationPlans.name,
+  locationId: locationPlans.locationId,
+  storageKey: locationPlans.storageKey,
+  contentType: locationPlans.contentType,
+  width: locationPlans.width,
+  height: locationPlans.height,
+  apsObjectKey: locationPlans.apsObjectKey,
+  apsUrn: locationPlans.apsUrn,
+  apsTranslationStatus: locationPlans.apsTranslationStatus,
+  apsTranslationError: locationPlans.apsTranslationError,
+  createdAt: locationPlans.createdAt,
+  updatedAt: locationPlans.updatedAt,
+  locationCode: locations.locationCode,
+  locationName: locations.name,
+  locationType: locations.locationType,
+  siteId: sites.id,
+  siteName: sites.name,
+  clientId: clients.id,
+  clientName: clients.name,
+};
+
 export async function loadPlanContextById(db: Database, planId: string) {
   const [row] = await db
-    .select({
-      id: locationPlans.id,
-      name: locationPlans.name,
-      locationId: locationPlans.locationId,
-      storageKey: locationPlans.storageKey,
-      contentType: locationPlans.contentType,
-      width: locationPlans.width,
-      height: locationPlans.height,
-      createdAt: locationPlans.createdAt,
-      updatedAt: locationPlans.updatedAt,
-      locationCode: locations.locationCode,
-      locationName: locations.name,
-      locationType: locations.locationType,
-      siteId: sites.id,
-      siteName: sites.name,
-      clientId: clients.id,
-      clientName: clients.name,
-    })
+    .select(planContextSelect)
     .from(locationPlans)
     .innerJoin(locations, eq(locations.id, locationPlans.locationId))
     .innerJoin(sites, eq(sites.id, locations.siteId))
@@ -52,24 +58,7 @@ export async function loadPlanContextById(db: Database, planId: string) {
 
 export async function loadPlanContextByLocationId(db: Database, locationId: string) {
   const [row] = await db
-    .select({
-      id: locationPlans.id,
-      name: locationPlans.name,
-      locationId: locationPlans.locationId,
-      storageKey: locationPlans.storageKey,
-      contentType: locationPlans.contentType,
-      width: locationPlans.width,
-      height: locationPlans.height,
-      createdAt: locationPlans.createdAt,
-      updatedAt: locationPlans.updatedAt,
-      locationCode: locations.locationCode,
-      locationName: locations.name,
-      locationType: locations.locationType,
-      siteId: sites.id,
-      siteName: sites.name,
-      clientId: clients.id,
-      clientName: clients.name,
-    })
+    .select(planContextSelect)
     .from(locationPlans)
     .innerJoin(locations, eq(locations.id, locationPlans.locationId))
     .innerJoin(sites, eq(sites.id, locations.siteId))
@@ -82,6 +71,19 @@ export async function loadPlanContextByLocationId(db: Database, locationId: stri
 
 export type PlanContextRow = NonNullable<Awaited<ReturnType<typeof loadPlanContextById>>>;
 
+export function presentPlanAps(row: PlanContextRow) {
+  if (row.contentType !== PLAN_ACAD_CONTENT_TYPE) {
+    return null;
+  }
+
+  return {
+    objectKey: row.apsObjectKey,
+    urn: row.apsUrn,
+    translationStatus: row.apsTranslationStatus,
+    translationError: row.apsTranslationError,
+  };
+}
+
 export function presentPlanListItem(row: PlanContextRow) {
   return {
     id: row.id,
@@ -89,6 +91,7 @@ export function presentPlanListItem(row: PlanContextRow) {
     contentType: row.contentType,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    aps: presentPlanAps(row),
     client: { id: row.clientId, name: row.clientName },
     site: { id: row.siteId, name: row.siteName },
     location: {
@@ -167,6 +170,7 @@ export async function presentLocationScopedPlan(
     contentType: detail.contentType,
     width: detail.width,
     height: detail.height,
+    aps: detail.aps,
     features: detail.features,
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
