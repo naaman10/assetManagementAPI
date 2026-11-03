@@ -278,6 +278,7 @@ A user with the `admin` role can see every client. Any other user can see a clie
 | Create site plan | `POST /site-plans` | Client member |
 | Read site plan | `GET /site-plans/:id` | Client member |
 | Inspect DWG site plan | `GET /site-plans/:id/cad-inspect` | Client member |
+| Detect PDF room proposals | `GET /site-plans/:id/pdf-detect` | Client member |
 | APS Viewer token | `GET /site-plans/:id/viewer` | Client member |
 | Start APS translation | `POST /site-plans/:id/aps-translate` | Client member |
 | Update site plan | `PATCH /site-plans/:id` | Client member |
@@ -348,6 +349,8 @@ Create a site with `{ "name", "reference", "address", "contactId" }`. `reference
 `POST /site-plans` creates a plan as multipart form data with fields `locationId`, `name`, and `plan` (PDF, DWG, JPEG, PNG, or WebP, 50 MB or less). DWG files are stored with `contentType` `application/acad`. Objects are stored at `clients/{clientId}/locations/{locationId}/plans/{planId}`. Returns `201 { "sitePlan" }`. A non-floor location returns `400`. A floor that already has a plan returns `409`. When APS is configured, DWG creates also upload the file to APS OSS and start an SVF2 translation; failures are recorded on `aps` and do not roll back the site plan.
 
 `GET /site-plans/:id/cad-inspect` parses a DWG plan and returns `{ "cadInspect" }` with `planId`, `contentType`, `dwgVersion`, `layers`, `entityCounts`, `blocks`, `texts`, and `closedPolylines` (capped lists for the mapping experiment). Non-DWG plans return `400`. Parse failures return `422`.
+
+`GET /site-plans/:id/pdf-detect` proposes room outlines from a **vector** PDF site plan (propose-only; nothing is saved). Returns `{ "pdfDetect" }` with `planId`, `contentType`, `page`, `pageCount`, `candidates`, `existingLocations`, and `notes`. Each candidate is `{ "geometry", "suggestedLabel", "confidence", "pointCount", "area", "bbox" }` where `geometry` is a GeoJSON-like Polygon in normalized 0–1 plan space (Y flipped from PDF user space), `confidence` is `low` | `medium` | `high`, and `suggestedLabel` may be null. `existingLocations` lists rooms/areas under the floor as `{ "id", "name", "locationCode", "locationType" }` for FE matching hints — the API does **not** auto-match or write features. Non-PDF returns `400`. Image-only/scanned PDFs or parse failures return `422`. Storage failures return `503`. After review, the FE saves chosen polygons with `PUT /site-plans/:id/features`.
 
 `GET /site-plans/:id/viewer` returns `{ "viewer": { "accessToken", "expiresIn", "urn", "translationStatus" } }` for a successfully translated DWG so the frontend can load the Autodesk Viewer. Non-DWG returns `400`. Missing APS config returns `503`. Missing or unfinished translation returns `409` with the current `aps` status. Poll `GET /site-plans/:id` (or retry this endpoint) until `translationStatus` is `success`, then call viewer again for a fresh token.
 

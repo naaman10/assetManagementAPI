@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { refreshSitePlanApsStatus, syncSitePlanApsTranslation } from "../aps/sitePlanAps.js";
@@ -6,6 +6,7 @@ import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
 import { CadInspectError, inspectDwgBytes } from "../db/cadInspect.js";
 import {
+  descendantRoomAreaIds,
   loadPlanContextById,
   PLAN_ACAD_CONTENT_TYPE,
   planContentType,
@@ -15,11 +16,14 @@ import {
   type PlanFeatureInput,
 } from "../db/locationPlanHelpers.js";
 import { isManagedLocationPlanKey } from "../db/locationPlanObjects.js";
+import { PdfDetectError, detectRoomsFromPdfBytes } from "../db/pdfDetect.js";
 import { clients, locationPlans, locations, sites } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
 import { AssetStorageError } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
+
+const PLAN_PDF_CONTENT_TYPE = "application/pdf";
 
 const MAX_PLAN_BYTES = 50 * 1024 * 1024;
 
@@ -156,6 +160,71 @@ sitePlanRoutes.get("/site-plans/:id/cad-inspect", requireUser, async (c) => {
     console.error("Unexpected CAD inspect failure", error);
     return c.json({ error: "Failed to inspect DWG." }, 422);
   }
+});
+
+sitePlanRoutes.get("/site-plans/:id/pdf-detect", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const row = await loadVisiblePlan(db, c.get("user"), id);
+
+  if (!row) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  if (row.contentType !== PLAN_PDF_CONTENT_TYPE) {
+    return c.json({ error: "PDF detect is only available for PDF site plans." }, 400);
+  }
+
+  const storage = c.get("services").assets;
+  let bytes: Uint8Array;
+
+  try {
+    bytes = await storage.getObjectBytes(row.storageKey);
+  } catch (error) {
+    if (error instanceof AssetStorageError) {
+      return c.json({ error: error.message }, 503);
+    }
+    return routeError(c, error);
+  }
+
+  let pdfDetect;
+
+  try {
+    pdfDetect = await detectRoomsFromPdfBytes(id, bytes);
+  } catch (error) {
+    if (error instanceof PdfDetectError) {
+      return c.json({ error: error.message }, 422);
+    }
+    console.error("Unexpected PDF detect failure", error);
+    return c.json({ error: "Failed to detect rooms in PDF." }, 422);
+  }
+
+  const existingLocationIds = await descendantRoomAreaIds(db, row.locationId);
+  const existingLocations =
+    existingLocationIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: locations.id,
+            name: locations.name,
+            locationCode: locations.locationCode,
+            locationType: locations.locationType,
+          })
+          .from(locations)
+          .where(inArray(locations.id, existingLocationIds))
+          .orderBy(asc(locations.name), asc(locations.locationCode));
+
+  return c.json({
+    pdfDetect: {
+      ...pdfDetect,
+      existingLocations,
+    },
+  });
 });
 
 sitePlanRoutes.get("/site-plans/:id/viewer", requireUser, async (c) => {
