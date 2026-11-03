@@ -10,26 +10,23 @@ const MAX_CANDIDATES = 200;
 const MAX_POINTS_PER_RING = 200;
 const MIN_VERTICES = 3;
 const MAX_VERTICES = 64;
-/** Hard rejects only for clear junk / page frames. */
-const MIN_AREA = 0.001;
+const MIN_AREA = 0.0008;
 const MAX_AREA = 0.55;
+const MAX_BBOX_COVERAGE = 0.92;
 const BEZIER_STEPS = 8;
-const NEAREST_TEXT_THRESHOLD = 0.025;
 const COLLINEAR_EPSILON = 1e-6;
-/** Door opening as a fraction of the room perimeter (score bonus, not required). */
-const MIN_DOOR_GAP_FRAC = 0.005;
-const MAX_DOOR_GAP_FRAC = 0.35;
-/** Nearly-closed open paths: gap vs page diagonal. */
 const MIN_DOOR_GAP_DIAG = 0.002;
 const MAX_DOOR_GAP_DIAG = 0.15;
-/** Soft shape gates — real CAD rooms are often imperfect. */
-const MIN_RECTANGULARITY = 0.3;
-const MIN_AXIS_ALIGNED = 0.45;
-const MAX_ASPECT = 10;
-const MIN_ROOM_SCORE = 0.42;
 const AXIS_ANGLE_TOL_DEG = 20;
-/** Reject shapes whose bbox covers almost the whole page (title/border frames). */
-const MAX_BBOX_COVERAGE = 0.92;
+const MIN_RECTANGULARITY = 0.25;
+const MIN_AXIS_ALIGNED = 0.4;
+const MAX_ASPECT = 12;
+/** Fuzzy match threshold against location name/code (0–1). */
+const MIN_FUZZY_SCORE = 0.72;
+/** Max distance from label to a wall loop centroid, as a fraction of page diagonal. */
+const MAX_LOOP_CENTROID_DIST = 0.2;
+/** Ray length for wall search around a label when no loop contains it. */
+const RAY_LENGTH_DIAG_FRAC = 0.35;
 
 /** DrawOPS packed into constructPath path buffers (pdf.js). */
 const DrawOPS = {
@@ -42,12 +39,20 @@ const DrawOPS = {
 
 export type PdfDetectConfidence = "low" | "medium" | "high";
 
+export type PdfDetectLocationHint = {
+  id: string;
+  name: string | null;
+  locationCode: string | null;
+  locationType: string | null;
+};
+
 export type PdfDetectCandidate = {
   geometry: {
     type: "Polygon";
     coordinates: number[][][];
   };
   suggestedLabel: string | null;
+  suggestedLocationId: string | null;
   confidence: PdfDetectConfidence;
   pointCount: number;
   area: number;
@@ -73,9 +78,20 @@ type PageText = {
 
 type RawPath = {
   points: Point[];
-  /** Explicit PDF closePath vs nearly-closed wall loop (door gap). */
   closedExplicitly: boolean;
   doorGap: number | null;
+};
+
+type WallSegment = {
+  a: Point;
+  b: Point;
+};
+
+type PreparedLoop = {
+  ring: Point[];
+  areaAbs: number;
+  areaNorm: number;
+  centroid: Point;
 };
 
 export class PdfDetectError extends Error {
@@ -88,6 +104,7 @@ export class PdfDetectError extends Error {
 export async function detectRoomsFromPdfBytes(
   planId: string,
   bytes: Uint8Array,
+  existingLocations: PdfDetectLocationHint[] = [],
 ): Promise<PdfDetectSummary> {
   const notes: string[] = [];
   let document: PDFDocumentProxy | null = null;
@@ -129,128 +146,125 @@ export async function detectRoomsFromPdfBytes(
     }
 
     const pageArea = pageWidth * pageHeight;
-    const pageDiagonalLen = Math.hypot(pageWidth, pageHeight);
-    const nearestThreshold = NEAREST_TEXT_THRESHOLD * pageDiagonalLen;
+    const pageDiagonal = Math.hypot(pageWidth, pageHeight);
 
-    const { paths, pathOpCount, imageOpCount } = await extractRoomPaths(page, pageDiagonalLen);
+    const { paths, segments, pathOpCount, imageOpCount } = await extractGeometry(
+      page,
+      pageDiagonal,
+    );
     const texts = await extractTexts(page);
 
-    if (pathOpCount === 0) {
+    if (pathOpCount === 0 && texts.length === 0) {
       if (imageOpCount > 0) {
         throw new PdfDetectError(
-          "No vector paths found. This PDF looks image-only or scanned; vector room detection needs CAD-exported paths.",
+          "No vector text/paths found. This PDF looks image-only or scanned; vector room detection needs CAD-exported content.",
         );
       }
-      throw new PdfDetectError("No vector paths found on page 1.");
-    }
-
-    if (paths.length === 0) {
-      notes.push(
-        "Vector paths were found, but none looked like closed or nearly-closed wall loops (rooms with door gaps).",
-      );
+      throw new PdfDetectError("No vector content found on page 1.");
     }
 
     notes.push(
-      "Candidates prefer room-sized wall loops (closed or with a door gap); tiny symbols and page frames are dropped.",
+      "Detection matches PDF text to existing rooms/areas, then finds walls around each matched label.",
     );
 
-    type Scored = PdfDetectCandidate & { score: number };
-    const scored: Scored[] = [];
-    const rejectReasons: Record<string, number> = {};
+    if (existingLocations.length === 0) {
+      notes.push(
+        "No existing rooms/areas under this floor — create locations first so labels can be matched.",
+      );
+      return {
+        planId,
+        contentType: "application/pdf",
+        page: 1,
+        pageCount,
+        candidates: [],
+        notes,
+      };
+    }
 
-    const reject = (reason: string) => {
-      rejectReasons[reason] = (rejectReasons[reason] ?? 0) + 1;
-    };
+    const matches = fuzzyMatchTextsToLocations(texts, existingLocations);
+    notes.push(
+      `Matched ${matches.length} PDF label(s) to existing locations (from ${texts.length} text item(s), ${existingLocations.length} location(s)).`,
+    );
 
-    for (const path of paths) {
-      const simplified = simplifyCollinear(path.points);
-      if (simplified.length < MIN_VERTICES || simplified.length > MAX_VERTICES) {
-        reject("vertex_count");
+    if (matches.length === 0) {
+      notes.push(
+        "No fuzzy text matches. Check that room names/codes on the PDF align with location name or locationCode.",
+      );
+      return {
+        planId,
+        contentType: "application/pdf",
+        page: 1,
+        pageCount,
+        candidates: [],
+        notes,
+      };
+    }
+
+    const loops = prepareLoops(paths, pageWidth, pageHeight, pageArea);
+    notes.push(`Prepared ${loops.length} wall loop(s); ${segments.length} wall segment(s) for ray search.`);
+
+    const candidates: PdfDetectCandidate[] = [];
+    let fromLoop = 0;
+    let fromRays = 0;
+    let noWalls = 0;
+
+    for (const match of matches) {
+      if (candidates.length >= MAX_CANDIDATES) {
+        break;
+      }
+
+      const loop = findBestLoopAroundPoint(match.text, loops, pageDiagonal);
+      let ringPdf: Point[] | null = loop?.ring ?? null;
+      let source: "loop" | "rays" | null = loop ? "loop" : null;
+
+      if (!ringPdf) {
+        ringPdf = rectangleFromWallRays(match.text, segments, pageDiagonal);
+        source = ringPdf ? "rays" : null;
+      }
+
+      if (!ringPdf) {
+        noWalls += 1;
         continue;
       }
 
-      const areaAbs = Math.abs(polygonArea(simplified));
+      const areaAbs = Math.abs(polygonArea(ringPdf));
       const areaNorm = areaAbs / pageArea;
-      if (areaNorm < MIN_AREA) {
-        reject("too_small");
-        continue;
-      }
-      if (areaNorm > MAX_AREA) {
-        reject("too_large");
+      if (areaNorm < MIN_AREA || areaNorm > MAX_AREA) {
+        noWalls += 1;
         continue;
       }
 
-      const pdfBbox = bboxOf(simplified);
-      const bboxCoverage =
-        ((pdfBbox.maxX - pdfBbox.minX) / pageWidth) *
-        ((pdfBbox.maxY - pdfBbox.minY) / pageHeight);
-      if (bboxCoverage >= MAX_BBOX_COVERAGE) {
-        reject("page_frame");
-        continue;
+      const ringNorm = closeRing(ringPdf).map(([x, y]) =>
+        normalizePoint(x, y, pageWidth, pageHeight),
+      );
+
+      if (source === "loop") {
+        fromLoop += 1;
+      } else {
+        fromRays += 1;
       }
 
-      const metrics = roomMetrics(simplified, path.doorGap, pageDiagonalLen);
-      if (!metrics) {
-        reject("shape");
-        continue;
-      }
-
-      const ringPdf = closeRing(simplified.slice(0, MAX_POINTS_PER_RING));
-      const label = suggestLabel(ringPdf, texts, nearestThreshold);
-      const score = roomScore(metrics, Boolean(label.value), path.closedExplicitly);
-
-      if (score < MIN_ROOM_SCORE) {
-        reject("low_score");
-        continue;
-      }
-
-      const ringNorm = ringPdf.map(([x, y]) => normalizePoint(x, y, pageWidth, pageHeight));
-      const confidence = refineConfidence(label.confidence, metrics, score);
-
-      scored.push({
+      candidates.push({
         geometry: {
           type: "Polygon",
           coordinates: [ringNorm],
         },
-        suggestedLabel: label.value,
-        confidence,
+        suggestedLabel: match.matchedText,
+        suggestedLocationId: match.location.id,
+        confidence: confidenceForMatch(match.fuzzyScore, source === "loop"),
         pointCount: ringNorm.length - 1,
         area: Number(areaNorm.toFixed(6)),
         bbox: bboxOf(ringNorm),
-        score,
       });
     }
 
-    scored.sort((a, b) => b.score - a.score);
-    const candidates = dedupeOverlapping(scored)
-      .slice(0, MAX_CANDIDATES)
-      .map((entry) => ({
-        geometry: entry.geometry,
-        suggestedLabel: entry.suggestedLabel,
-        confidence: entry.confidence,
-        pointCount: entry.pointCount,
-        area: entry.area,
-        bbox: entry.bbox,
-      }));
-
-    if (scored.length > MAX_CANDIDATES) {
-      notes.push(`Candidate list capped at ${MAX_CANDIDATES}.`);
-    }
-
-    const rejectedTotal = Object.values(rejectReasons).reduce((sum, n) => sum + n, 0);
-    if (rejectedTotal > 0) {
-      const summary = Object.entries(rejectReasons)
-        .sort((a, b) => b[1] - a[1])
-        .map(([reason, count]) => `${reason}=${count}`)
-        .join(", ");
-      notes.push(`Filtered ${rejectedTotal} path(s): ${summary}.`);
-    }
-
-    notes.push(`Parsed ${paths.length} closed/nearly-closed path(s); kept ${candidates.length}.`);
+    notes.push(
+      `Walls found via loop=${fromLoop}, ray-box=${fromRays}, unmatched labels=${noWalls}.`,
+    );
 
     if (candidates.length === 0) {
       notes.push(
-        "No room candidates passed filters. If the plan draws walls as separate segments (not room loops), vector detect cannot form rooms yet.",
+        "Labels matched, but no enclosing walls were found nearby. The plan may draw walls in a way that is hard to join around text.",
       );
     }
 
@@ -271,9 +285,322 @@ export async function detectRoomsFromPdfBytes(
   }
 }
 
-async function extractRoomPaths(page: PDFPageProxy, pageDiagonal: number) {
+function confidenceForMatch(fuzzyScore: number, fromLoop: boolean): PdfDetectConfidence {
+  if (fuzzyScore >= 0.92 && fromLoop) {
+    return "high";
+  }
+  if (fuzzyScore >= 0.8 || fromLoop) {
+    return "medium";
+  }
+  return "low";
+}
+
+function fuzzyMatchTextsToLocations(texts: PageText[], locations: PdfDetectLocationHint[]) {
+  type ScoredMatch = {
+    text: PageText;
+    location: PdfDetectLocationHint;
+    fuzzyScore: number;
+    matchedText: string;
+  };
+
+  const scored: ScoredMatch[] = [];
+
+  for (const text of texts) {
+    for (const location of locations) {
+      const against = [location.locationCode, location.name].filter(
+        (value): value is string => Boolean(value && value.trim()),
+      );
+
+      for (const target of against) {
+        const score = fuzzyLabelScore(text.value, target);
+        if (score >= MIN_FUZZY_SCORE) {
+          scored.push({
+            text,
+            location,
+            fuzzyScore: score,
+            matchedText: text.value.trim(),
+          });
+        }
+      }
+    }
+  }
+
+  scored.sort((a, b) => b.fuzzyScore - a.fuzzyScore);
+
+  const usedTexts = new Set<string>();
+  const usedLocations = new Set<string>();
+  const matches: ScoredMatch[] = [];
+
+  for (const entry of scored) {
+    const textKey = `${entry.text.x.toFixed(2)}:${entry.text.y.toFixed(2)}:${entry.text.value}`;
+    if (usedTexts.has(textKey) || usedLocations.has(entry.location.id)) {
+      continue;
+    }
+    usedTexts.add(textKey);
+    usedLocations.add(entry.location.id);
+    matches.push(entry);
+  }
+
+  return matches;
+}
+
+function fuzzyLabelScore(rawA: string, rawB: string) {
+  const a = normalizeLabel(rawA);
+  const b = normalizeLabel(rawB);
+
+  if (!a || !b) {
+    return 0;
+  }
+
+  if (a === b) {
+    return 1;
+  }
+
+  if (a.includes(b) || b.includes(a)) {
+    const shorter = Math.min(a.length, b.length);
+    const longer = Math.max(a.length, b.length);
+    return 0.82 + 0.15 * (shorter / longer);
+  }
+
+  const distance = levenshtein(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  return Math.max(0, 1 - distance / maxLen);
+}
+
+function normalizeLabel(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function levenshtein(a: string, b: string) {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix: number[][] = Array.from({ length: rows }, () => Array(cols).fill(0));
+
+  for (let i = 0; i < rows; i++) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j < cols; j++) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+    }
+  }
+
+  return matrix[a.length][b.length];
+}
+
+function prepareLoops(
+  paths: RawPath[],
+  pageWidth: number,
+  pageHeight: number,
+  pageArea: number,
+): PreparedLoop[] {
+  const loops: PreparedLoop[] = [];
+
+  for (const path of paths) {
+    const simplified = simplifyCollinear(path.points);
+    if (simplified.length < MIN_VERTICES || simplified.length > MAX_VERTICES) {
+      continue;
+    }
+
+    const areaAbs = Math.abs(polygonArea(simplified));
+    const areaNorm = areaAbs / pageArea;
+    if (areaNorm < MIN_AREA || areaNorm > MAX_AREA) {
+      continue;
+    }
+
+    const pdfBbox = bboxOf(simplified);
+    const bboxCoverage =
+      ((pdfBbox.maxX - pdfBbox.minX) / pageWidth) *
+      ((pdfBbox.maxY - pdfBbox.minY) / pageHeight);
+    if (bboxCoverage >= MAX_BBOX_COVERAGE) {
+      continue;
+    }
+
+    if (!passesSoftRoomShape(simplified)) {
+      continue;
+    }
+
+    const ring = closeRing(simplified.slice(0, MAX_POINTS_PER_RING));
+    loops.push({
+      ring,
+      areaAbs,
+      areaNorm,
+      centroid: polygonCentroid(ring),
+    });
+  }
+
+  loops.sort((a, b) => a.areaAbs - b.areaAbs);
+  return loops;
+}
+
+function passesSoftRoomShape(points: Point[]) {
+  const areaAbs = Math.abs(polygonArea(points));
+  const box = bboxOf(points);
+  const bw = Math.max(box.maxX - box.minX, COLLINEAR_EPSILON);
+  const bh = Math.max(box.maxY - box.minY, COLLINEAR_EPSILON);
+  const rectangularity = Math.min(1, areaAbs / (bw * bh));
+  const aspect = Math.max(bw / bh, bh / bw);
+  const axisAligned = axisAlignedEdgeRatio(points);
+
+  return (
+    rectangularity >= MIN_RECTANGULARITY &&
+    axisAligned >= MIN_AXIS_ALIGNED &&
+    aspect <= MAX_ASPECT
+  );
+}
+
+function findBestLoopAroundPoint(
+  text: PageText,
+  loops: PreparedLoop[],
+  pageDiagonal: number,
+): PreparedLoop | null {
+  const point: Point = [text.x, text.y];
+  const containing = loops.filter((loop) => pointInPolygon(point, loop.ring));
+
+  if (containing.length > 0) {
+    // Smallest enclosing room loop.
+    return containing[0];
+  }
+
+  // Nearby loop by centroid if the label sits just outside (common with door/label placement).
+  const maxDist = MAX_LOOP_CENTROID_DIST * pageDiagonal;
+  let best: PreparedLoop | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+
+  for (const loop of loops) {
+    const dist = Math.hypot(loop.centroid[0] - point[0], loop.centroid[1] - point[1]);
+    if (dist <= maxDist && dist < bestDist && pointNearPolygon(point, loop.ring, maxDist * 0.25)) {
+      best = loop;
+      bestDist = dist;
+    }
+  }
+
+  return best;
+}
+
+function pointNearPolygon(point: Point, ring: Point[], threshold: number) {
+  if (pointInPolygon(point, ring)) {
+    return true;
+  }
+
+  for (let i = 0; i < ring.length - 1; i++) {
+    if (distanceToSegment(point, ring[i], ring[i + 1]) <= threshold) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function rectangleFromWallRays(
+  text: PageText,
+  segments: WallSegment[],
+  pageDiagonal: number,
+): Point[] | null {
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const origin: Point = [text.x, text.y];
+  const rayLen = RAY_LENGTH_DIAG_FRAC * pageDiagonal;
+
+  const left = nearestHit(origin, [-1, 0], segments, rayLen);
+  const right = nearestHit(origin, [1, 0], segments, rayLen);
+  const down = nearestHit(origin, [0, -1], segments, rayLen);
+  const up = nearestHit(origin, [0, 1], segments, rayLen);
+
+  if (left == null || right == null || down == null || up == null) {
+    return null;
+  }
+
+  // Require hits on both sides so we don't invent huge open boxes.
+  if (right - left < pageDiagonal * 0.01 || up - down < pageDiagonal * 0.01) {
+    return null;
+  }
+
+  if (right - left > pageDiagonal * 0.5 || up - down > pageDiagonal * 0.5) {
+    return null;
+  }
+
+  return [
+    [left, down],
+    [right, down],
+    [right, up],
+    [left, up],
+  ];
+}
+
+function nearestHit(
+  origin: Point,
+  direction: Point,
+  segments: WallSegment[],
+  maxDist: number,
+): number | null {
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestCoord: number | null = null;
+
+  for (const segment of segments) {
+    const hit = raySegmentIntersection(origin, direction, segment.a, segment.b, maxDist);
+    if (hit == null || hit.distance >= bestDistance) {
+      continue;
+    }
+
+    bestDistance = hit.distance;
+    bestCoord = direction[0] !== 0 ? hit.point[0] : hit.point[1];
+  }
+
+  return bestCoord;
+}
+
+function raySegmentIntersection(
+  origin: Point,
+  direction: Point,
+  a: Point,
+  b: Point,
+  maxDist: number,
+): { point: Point; distance: number } | null {
+  const dx = direction[0];
+  const dy = direction[1];
+  const ex = b[0] - a[0];
+  const ey = b[1] - a[1];
+  const denom = dx * ey - dy * ex;
+
+  if (Math.abs(denom) < COLLINEAR_EPSILON) {
+    return null;
+  }
+
+  const qx = a[0] - origin[0];
+  const qy = a[1] - origin[1];
+  const t = (qx * ey - qy * ex) / denom;
+  const u = (qx * dy - qy * dx) / denom;
+
+  if (t < COLLINEAR_EPSILON || t > maxDist || u < 0 || u > 1) {
+    return null;
+  }
+
+  return {
+    point: [origin[0] + t * dx, origin[1] + t * dy],
+    distance: t,
+  };
+}
+
+async function extractGeometry(page: PDFPageProxy, pageDiagonal: number) {
   const opList = await page.getOperatorList();
   const paths: RawPath[] = [];
+  const segments: WallSegment[] = [];
   let pathOpCount = 0;
   let imageOpCount = 0;
 
@@ -318,7 +645,9 @@ async function extractRoomPaths(page: PDFPageProxy, pageDiagonal: number) {
         if (!(buffer instanceof Float32Array)) {
           continue;
         }
-        paths.push(...decodeDrawOps(buffer, ctm, pageDiagonal));
+        const decoded = decodeDrawOps(buffer, ctm, pageDiagonal);
+        paths.push(...decoded.paths);
+        segments.push(...decoded.segments);
       }
       continue;
     }
@@ -336,18 +665,35 @@ async function extractRoomPaths(page: PDFPageProxy, pageDiagonal: number) {
     }
   }
 
-  return { paths, pathOpCount, imageOpCount };
+  return { paths, segments, pathOpCount, imageOpCount };
 }
 
-function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: number): RawPath[] {
-  const out: RawPath[] = [];
+function decodeDrawOps(
+  data: ArrayLike<number>,
+  ctm: number[],
+  pageDiagonal: number,
+): { paths: RawPath[]; segments: WallSegment[] } {
+  const paths: RawPath[] = [];
+  const segments: WallSegment[] = [];
   let current: Point[] = [];
   let start: Point | null = null;
   let i = 0;
 
   const apply = (x: number, y: number): Point => applyTransformPoint(x, y, ctm);
 
+  const pushSegment = (from: Point, to: Point) => {
+    if (Math.hypot(to[0] - from[0], to[1] - from[1]) > COLLINEAR_EPSILON) {
+      segments.push({ a: from, b: to });
+    }
+  };
+
   const flushOpen = () => {
+    if (current.length >= 2) {
+      for (let idx = 0; idx < current.length - 1; idx++) {
+        pushSegment(current[idx], current[idx + 1]);
+      }
+    }
+
     if (current.length < MIN_VERTICES || !start) {
       current = [];
       start = null;
@@ -360,13 +706,10 @@ function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: num
     const maxGap = MAX_DOOR_GAP_DIAG * pageDiagonal;
 
     if (gap <= minGap) {
-      // Effectively closed without closePath.
-      out.push({ points: current, closedExplicitly: true, doorGap: null });
+      paths.push({ points: current, closedExplicitly: true, doorGap: null });
     } else if (gap <= maxGap) {
-      // Nearly-closed wall loop — treat gap as a possible door opening.
-      out.push({ points: current, closedExplicitly: false, doorGap: gap });
+      paths.push({ points: current, closedExplicitly: false, doorGap: gap });
     }
-    // Larger gaps are open polylines / wall runs, not room loops.
 
     current = [];
     start = null;
@@ -387,7 +730,12 @@ function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: num
       case DrawOPS.lineTo: {
         const x = data[i++];
         const y = data[i++];
-        current.push(apply(x, y));
+        const next = apply(x, y);
+        const prev = current[current.length - 1];
+        if (prev) {
+          pushSegment(prev, next);
+        }
+        current.push(next);
         break;
       }
       case DrawOPS.curveTo: {
@@ -399,10 +747,14 @@ function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: num
         const y3 = data[i++];
         const p0 = current[current.length - 1] ?? start;
         if (p0) {
-          const c1 = apply(x1, y1);
-          const c2 = apply(x2, y2);
-          const c3 = apply(x3, y3);
-          current.push(...sampleCubic(p0, c1, c2, c3));
+          const sampled = sampleCubic(p0, apply(x1, y1), apply(x2, y2), apply(x3, y3));
+          for (const point of sampled) {
+            const prev = current[current.length - 1];
+            if (prev) {
+              pushSegment(prev, point);
+            }
+            current.push(point);
+          }
         }
         break;
       }
@@ -413,17 +765,23 @@ function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: num
         const y2 = data[i++];
         const p0 = current[current.length - 1] ?? start;
         if (p0) {
-          const c1 = apply(x1, y1);
-          const c2 = apply(x2, y2);
-          current.push(...sampleQuadratic(p0, c1, c2));
+          const sampled = sampleQuadratic(p0, apply(x1, y1), apply(x2, y2));
+          for (const point of sampled) {
+            const prev = current[current.length - 1];
+            if (prev) {
+              pushSegment(prev, point);
+            }
+            current.push(point);
+          }
         }
         break;
       }
       case DrawOPS.closePath: {
+        if (current.length >= 2 && start) {
+          pushSegment(current[current.length - 1], start);
+        }
         if (current.length >= MIN_VERTICES) {
-          // Closed loops are kept only if they look like wall boxes; door bonus
-          // comes from nearly-closed open paths (gap in the wall), not short edges.
-          out.push({
+          paths.push({
             points: current,
             closedExplicitly: true,
             doorGap: null,
@@ -435,171 +793,12 @@ function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: num
       }
       default:
         flushOpen();
-        return out;
+        return { paths, segments };
     }
   }
 
   flushOpen();
-  return out;
-}
-
-type RoomMetrics = {
-  rectangularity: number;
-  axisAligned: number;
-  aspect: number;
-  hasDoorGap: boolean;
-  doorGapFrac: number | null;
-};
-
-function roomMetrics(points: Point[], doorGap: number | null, pageDiagonal: number): RoomMetrics | null {
-  const areaAbs = Math.abs(polygonArea(points));
-  const bbox = bboxOf(points);
-  const bw = Math.max(bbox.maxX - bbox.minX, COLLINEAR_EPSILON);
-  const bh = Math.max(bbox.maxY - bbox.minY, COLLINEAR_EPSILON);
-  const bboxArea = bw * bh;
-  const rectangularity = Math.min(1, areaAbs / bboxArea);
-  const aspect = Math.max(bw / bh, bh / bw);
-  const axisAligned = axisAlignedEdgeRatio(points);
-  const perimeter = polygonPerimeter(points);
-
-  let hasDoorGap = false;
-  let doorGapFrac: number | null = null;
-
-  if (doorGap != null && perimeter > 0) {
-    doorGapFrac = doorGap / perimeter;
-    hasDoorGap =
-      doorGapFrac >= MIN_DOOR_GAP_FRAC &&
-      doorGapFrac <= MAX_DOOR_GAP_FRAC &&
-      doorGap >= MIN_DOOR_GAP_DIAG * pageDiagonal &&
-      doorGap <= MAX_DOOR_GAP_DIAG * pageDiagonal;
-  }
-
-  if (rectangularity < MIN_RECTANGULARITY) {
-    return null;
-  }
-
-  if (axisAligned < MIN_AXIS_ALIGNED) {
-    return null;
-  }
-
-  if (aspect > MAX_ASPECT) {
-    return null;
-  }
-
-  return { rectangularity, axisAligned, aspect, hasDoorGap, doorGapFrac };
-}
-
-function roomScore(metrics: RoomMetrics, hasLabel: boolean, closedExplicitly: boolean) {
-  let score = 0;
-  score += 0.3 * metrics.rectangularity;
-  score += 0.25 * metrics.axisAligned;
-  score += 0.1 * Math.max(0, 1 - (metrics.aspect - 1) / (MAX_ASPECT - 1));
-
-  // Closed room polylines are the common CAD case; door gaps are a bonus, not required.
-  if (closedExplicitly) {
-    score += 0.2;
-  }
-  if (metrics.hasDoorGap) {
-    score += 0.15;
-  }
-  if (hasLabel) {
-    score += 0.12;
-  }
-
-  return score;
-}
-
-function refineConfidence(
-  labelConfidence: PdfDetectConfidence,
-  metrics: RoomMetrics,
-  score: number,
-): PdfDetectConfidence {
-  if (metrics.hasDoorGap && hasStrongRoomShape(metrics) && labelConfidence === "high") {
-    return "high";
-  }
-
-  if (score >= 0.8 && labelConfidence !== "low") {
-    return labelConfidence === "high" ? "high" : "medium";
-  }
-
-  if (metrics.hasDoorGap && hasStrongRoomShape(metrics)) {
-    return labelConfidence === "low" ? "medium" : labelConfidence;
-  }
-
-  return labelConfidence;
-}
-
-function hasStrongRoomShape(metrics: RoomMetrics) {
-  return metrics.rectangularity >= 0.7 && metrics.axisAligned >= 0.85;
-}
-
-function axisAlignedEdgeRatio(points: Point[]) {
-  let aligned = 0;
-  let total = 0;
-  const tol = (AXIS_ANGLE_TOL_DEG * Math.PI) / 180;
-  const perimeter = polygonPerimeter(points);
-  const minSeg = Math.max(COLLINEAR_EPSILON, perimeter * 0.01);
-
-  for (let i = 0; i < points.length; i++) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
-    const dx = b[0] - a[0];
-    const dy = b[1] - a[1];
-    const len = Math.hypot(dx, dy);
-    // Ignore tiny segments from curve approximation / CAD noise.
-    if (len < minSeg) {
-      continue;
-    }
-
-    total += len;
-    const angle = Math.abs(Math.atan2(dy, dx));
-    const toHoriz = Math.min(angle, Math.PI - angle);
-    const toVert = Math.abs(angle - Math.PI / 2);
-    if (toHoriz <= tol || toVert <= tol) {
-      aligned += len;
-    }
-  }
-
-  return total > 0 ? aligned / total : 0;
-}
-
-function polygonPerimeter(points: Point[]) {
-  let sum = 0;
-  for (let i = 0; i < points.length; i++) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
-    sum += Math.hypot(b[0] - a[0], b[1] - a[1]);
-  }
-  return sum;
-}
-
-function dedupeOverlapping(candidates: Array<PdfDetectCandidate & { score: number }>) {
-  const kept: Array<PdfDetectCandidate & { score: number }> = [];
-
-  for (const candidate of candidates) {
-    const overlaps = kept.some((existing) => bboxOverlapRatio(existing.bbox, candidate.bbox) >= 0.65);
-    if (!overlaps) {
-      kept.push(candidate);
-    }
-  }
-
-  return kept;
-}
-
-function bboxOverlapRatio(
-  a: PdfDetectCandidate["bbox"],
-  b: PdfDetectCandidate["bbox"],
-) {
-  const xOverlap = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
-  const yOverlap = Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
-  const intersection = xOverlap * yOverlap;
-  if (intersection <= 0) {
-    return 0;
-  }
-
-  const areaA = Math.max(COLLINEAR_EPSILON, (a.maxX - a.minX) * (a.maxY - a.minY));
-  const areaB = Math.max(COLLINEAR_EPSILON, (b.maxX - b.minX) * (b.maxY - b.minY));
-  return intersection / Math.min(areaA, areaB);
+  return { paths, segments };
 }
 
 async function extractTexts(page: PDFPageProxy): Promise<PageText[]> {
@@ -631,61 +830,12 @@ async function extractTexts(page: PDFPageProxy): Promise<PageText[]> {
   return texts;
 }
 
-function suggestLabel(
-  ringPdf: Point[],
-  texts: PageText[],
-  nearestThreshold: number,
-): { value: string | null; confidence: PdfDetectConfidence } {
-  const inside = texts.filter((text) => pointInPolygon([text.x, text.y], ringPdf));
-
-  if (inside.length === 1) {
-    return { value: inside[0].value, confidence: "high" };
-  }
-
-  if (inside.length > 1) {
-    const centroid = polygonCentroid(ringPdf);
-    let best = inside[0];
-    let bestDist = Number.POSITIVE_INFINITY;
-
-    for (const text of inside) {
-      const dist = Math.hypot(text.x - centroid[0], text.y - centroid[1]);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = text;
-      }
-    }
-
-    return { value: best.value, confidence: "medium" };
-  }
-
-  const centroid = polygonCentroid(ringPdf);
-  let nearest: PageText | null = null;
-  let nearestDist = Number.POSITIVE_INFINITY;
-
-  for (const text of texts) {
-    const dist = Math.hypot(text.x - centroid[0], text.y - centroid[1]);
-    if (dist < nearestDist) {
-      nearestDist = dist;
-      nearest = text;
-    }
-  }
-
-  if (nearest && nearestDist <= nearestThreshold) {
-    return { value: nearest.value, confidence: "medium" };
-  }
-
-  return { value: null, confidence: "low" };
-}
-
 function applyTransformPoint(x: number, y: number, m: number[]): Point {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 }
 
 function normalizePoint(x: number, y: number, pageWidth: number, pageHeight: number): Point {
-  return [
-    clamp01(x / pageWidth),
-    clamp01(1 - y / pageHeight),
-  ];
+  return [clamp01(x / pageWidth), clamp01(1 - y / pageHeight)];
 }
 
 function clamp01(value: number) {
@@ -737,7 +887,6 @@ function simplifyCollinear(points: Point[]): Point[] {
 
   result.push(points[points.length - 1]);
 
-  // Drop duplicate closing vertex before filters; closeRing adds it later.
   if (
     result.length > 1 &&
     result[0][0] === result[result.length - 1][0] &&
@@ -792,6 +941,16 @@ function polygonCentroid(points: Point[]): Point {
   return [cx / (6 * area), cy / (6 * area)];
 }
 
+function polygonPerimeter(points: Point[]) {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    sum += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  return sum;
+}
+
 function bboxOf(points: Point[]) {
   let minX = points[0][0];
   let minY = points[0][1];
@@ -823,6 +982,50 @@ function pointInPolygon(point: Point, ring: Point[]) {
   }
 
   return inside;
+}
+
+function distanceToSegment(point: Point, a: Point, b: Point) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+
+  if (lenSq < COLLINEAR_EPSILON) {
+    return Math.hypot(point[0] - a[0], point[1] - a[1]);
+  }
+
+  let t = ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const proj: Point = [a[0] + t * dx, a[1] + t * dy];
+  return Math.hypot(point[0] - proj[0], point[1] - proj[1]);
+}
+
+function axisAlignedEdgeRatio(points: Point[]) {
+  let aligned = 0;
+  let total = 0;
+  const tol = (AXIS_ANGLE_TOL_DEG * Math.PI) / 180;
+  const perimeter = polygonPerimeter(points);
+  const minSeg = Math.max(COLLINEAR_EPSILON, perimeter * 0.01);
+
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy);
+    if (len < minSeg) {
+      continue;
+    }
+
+    total += len;
+    const angle = Math.abs(Math.atan2(dy, dx));
+    const toHoriz = Math.min(angle, Math.PI - angle);
+    const toVert = Math.abs(angle - Math.PI / 2);
+    if (toHoriz <= tol || toVert <= tol) {
+      aligned += len;
+    }
+  }
+
+  return total > 0 ? aligned / total : 0;
 }
 
 function sampleCubic(p0: Point, p1: Point, p2: Point, p3: Point): Point[] {

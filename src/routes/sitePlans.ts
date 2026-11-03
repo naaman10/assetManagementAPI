@@ -192,18 +192,6 @@ sitePlanRoutes.get("/site-plans/:id/pdf-detect", requireUser, async (c) => {
     return routeError(c, error);
   }
 
-  let pdfDetect;
-
-  try {
-    pdfDetect = await detectRoomsFromPdfBytes(id, bytes);
-  } catch (error) {
-    if (error instanceof PdfDetectError) {
-      return c.json({ error: error.message }, 422);
-    }
-    console.error("Unexpected PDF detect failure", error);
-    return c.json({ error: "Failed to detect rooms in PDF." }, 422);
-  }
-
   const existingLocationIds = await descendantRoomAreaIds(db, row.locationId);
   const existingLocations =
     existingLocationIds.length === 0
@@ -218,6 +206,18 @@ sitePlanRoutes.get("/site-plans/:id/pdf-detect", requireUser, async (c) => {
           .from(locations)
           .where(inArray(locations.id, existingLocationIds))
           .orderBy(asc(locations.name), asc(locations.locationCode));
+
+  let pdfDetect;
+
+  try {
+    pdfDetect = await detectRoomsFromPdfBytes(id, bytes, existingLocations);
+  } catch (error) {
+    if (error instanceof PdfDetectError) {
+      return c.json({ error: error.message }, 422);
+    }
+    console.error("Unexpected PDF detect failure", error);
+    return c.json({ error: "Failed to detect rooms in PDF." }, 422);
+  }
 
   return c.json({
     pdfDetect: {
