@@ -242,9 +242,15 @@ export function normalizeGeometry(geometry: {
   };
 }
 
+export const PLAN_ACAD_CONTENT_TYPE = "application/acad";
+
 export function planContentType(bytes: Uint8Array, declaredType: string) {
   if (bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
     return "application/pdf";
+  }
+
+  if (isDwgMagic(bytes)) {
+    return PLAN_ACAD_CONTENT_TYPE;
   }
 
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
@@ -290,7 +296,36 @@ export function planContentType(bytes: Uint8Array, declaredType: string) {
     return normalized;
   }
 
+  if (
+    normalized === PLAN_ACAD_CONTENT_TYPE ||
+    normalized === "application/x-dwg" ||
+    normalized === "application/dwg" ||
+    normalized === "image/vnd.dwg"
+  ) {
+    return PLAN_ACAD_CONTENT_TYPE;
+  }
+
   return null;
+}
+
+/** AutoCAD DWG files typically begin with a version marker such as AC1032. */
+function isDwgMagic(bytes: Uint8Array) {
+  if (bytes.length < 6) {
+    return false;
+  }
+
+  return (
+    bytes[0] === 0x41 && // A
+    bytes[1] === 0x43 && // C
+    bytes[2] >= 0x30 &&
+    bytes[2] <= 0x39 &&
+    bytes[3] >= 0x30 &&
+    bytes[3] <= 0x39 &&
+    bytes[4] >= 0x30 &&
+    bytes[4] <= 0x39 &&
+    bytes[5] >= 0x30 &&
+    bytes[5] <= 0x39
+  );
 }
 
 export function defaultPlanName(locationName: string | null, locationCode: string | null) {

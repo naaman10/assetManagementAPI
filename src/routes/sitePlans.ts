@@ -3,8 +3,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { clientIsVisible, clientVisibility } from "../auth/clientAccess.js";
 import { requireUser } from "../auth/middleware.js";
+import { CadInspectError, inspectDwgBytes } from "../db/cadInspect.js";
 import {
   loadPlanContextById,
+  PLAN_ACAD_CONTENT_TYPE,
   planContentType,
   presentPlanDetail,
   presentPlanListItem,
@@ -18,7 +20,7 @@ import { AssetStorageError } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
 
-const MAX_PLAN_BYTES = 25 * 1024 * 1024;
+const MAX_PLAN_BYTES = 50 * 1024 * 1024;
 
 const planName = z.string().trim().min(1).max(255);
 
@@ -98,6 +100,48 @@ sitePlanRoutes.get("/site-plans/:id", requireUser, async (c) => {
   return c.json({ sitePlan });
 });
 
+sitePlanRoutes.get("/site-plans/:id/cad-inspect", requireUser, async (c) => {
+  const id = parseId(c.req.param("id"));
+
+  if (!id) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  const db = c.get("services").db;
+  const row = await loadVisiblePlan(db, c.get("user"), id);
+
+  if (!row) {
+    return c.json({ error: "Site plan not found." }, 404);
+  }
+
+  if (row.contentType !== PLAN_ACAD_CONTENT_TYPE) {
+    return c.json({ error: "CAD inspect is only available for DWG site plans." }, 400);
+  }
+
+  const storage = c.get("services").assets;
+  let bytes: Uint8Array;
+
+  try {
+    bytes = await storage.getObjectBytes(row.storageKey);
+  } catch (error) {
+    if (error instanceof AssetStorageError) {
+      return c.json({ error: error.message }, 503);
+    }
+    return routeError(c, error);
+  }
+
+  try {
+    const cadInspect = inspectDwgBytes(id, bytes);
+    return c.json({ cadInspect });
+  } catch (error) {
+    if (error instanceof CadInspectError) {
+      return c.json({ error: error.message }, 422);
+    }
+    console.error("Unexpected CAD inspect failure", error);
+    return c.json({ error: "Failed to inspect DWG." }, 422);
+  }
+});
+
 sitePlanRoutes.post("/site-plans", requireUser, async (c) => {
   const contentTypeHeader = c.req.header("content-type") ?? "";
 
@@ -126,7 +170,7 @@ sitePlanRoutes.post("/site-plans", requireUser, async (c) => {
   }
 
   if (file.size > MAX_PLAN_BYTES) {
-    return c.json({ error: "Plan file must be 25 MB or less." }, 400);
+    return c.json({ error: "Plan file must be 50 MB or less." }, 400);
   }
 
   const db = c.get("services").db;
@@ -154,7 +198,7 @@ sitePlanRoutes.post("/site-plans", requireUser, async (c) => {
   const contentType = planContentType(bytes, file.type);
 
   if (!contentType) {
-    return c.json({ error: "Plan must be a PDF, JPEG, PNG, or WebP file." }, 400);
+    return c.json({ error: "Plan must be a PDF, DWG, JPEG, PNG, or WebP file." }, 400);
   }
 
   const planId = crypto.randomUUID();
@@ -244,14 +288,14 @@ sitePlanRoutes.patch("/site-plans/:id", requireUser, async (c) => {
 
     if (file instanceof File) {
       if (file.size > MAX_PLAN_BYTES) {
-        return c.json({ error: "Plan file must be 25 MB or less." }, 400);
+        return c.json({ error: "Plan file must be 50 MB or less." }, 400);
       }
 
       const bytes = new Uint8Array(await file.arrayBuffer());
       const detected = planContentType(bytes, file.type);
 
       if (!detected) {
-        return c.json({ error: "Plan must be a PDF, JPEG, PNG, or WebP file." }, 400);
+        return c.json({ error: "Plan must be a PDF, DWG, JPEG, PNG, or WebP file." }, 400);
       }
 
       try {

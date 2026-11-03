@@ -29,7 +29,7 @@ import { AssetStorageError } from "../storage/assets.js";
 import type { AppEnv, AuthUser } from "../types.js";
 import { invalidRequest, readBody, routeError } from "./http.js";
 
-const MAX_PLAN_BYTES = 25 * 1024 * 1024;
+const MAX_PLAN_BYTES = 50 * 1024 * 1024;
 const planNameField = z.string().trim().min(1).max(255);
 
 const linkPlanSchema = z.object({
@@ -287,14 +287,14 @@ locationRoutes.put("/locations/:id/plan", requireUser, async (c) => {
     }
 
     if (file.size > MAX_PLAN_BYTES) {
-      return c.json({ error: "Plan file must be 25 MB or less." }, 400);
+      return c.json({ error: "Plan file must be 50 MB or less." }, 400);
     }
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const detected = planContentType(bytes, file.type);
 
     if (!detected) {
-      return c.json({ error: "Plan must be a PDF, JPEG, PNG, or WebP file." }, 400);
+      return c.json({ error: "Plan must be a PDF, DWG, JPEG, PNG, or WebP file." }, 400);
     }
 
     contentType = detected;

@@ -137,6 +137,26 @@ export function createAssetStorage(env: Env) {
     async planUrl(key: string) {
       return signedUrl(client, bucket, key);
     },
+
+    async getObjectBytes(key: string) {
+      try {
+        const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const body = response.Body;
+
+        if (!body) {
+          throw new AssetStorageError();
+        }
+
+        const bytes = await body.transformToByteArray();
+        return new Uint8Array(bytes);
+      } catch (error) {
+        if (error instanceof AssetStorageError) {
+          throw error;
+        }
+        console.error("Failed to read stored object", error);
+        throw new AssetStorageError();
+      }
+    },
   };
 }
 
