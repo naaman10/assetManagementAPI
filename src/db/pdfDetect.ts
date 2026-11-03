@@ -8,27 +8,28 @@ import {
 
 const MAX_CANDIDATES = 200;
 const MAX_POINTS_PER_RING = 200;
-const MIN_VERTICES = 4;
-const MAX_VERTICES = 24;
-/** Room footprints: ignore tiny symbols and near-full-page frames. */
-const MIN_AREA = 0.005;
-const MAX_AREA = 0.35;
-/** Closed boxes without a door gap need to be larger (or labeled) to count as rooms. */
-const MIN_CLOSED_UNLABELED_AREA = 0.015;
+const MIN_VERTICES = 3;
+const MAX_VERTICES = 64;
+/** Hard rejects only for clear junk / page frames. */
+const MIN_AREA = 0.001;
+const MAX_AREA = 0.55;
 const BEZIER_STEPS = 8;
-const NEAREST_TEXT_THRESHOLD = 0.02;
+const NEAREST_TEXT_THRESHOLD = 0.025;
 const COLLINEAR_EPSILON = 1e-6;
-/** Door opening as a fraction of the room perimeter. */
-const MIN_DOOR_GAP_FRAC = 0.01;
-const MAX_DOOR_GAP_FRAC = 0.25;
-/** Nearly-closed open paths: gap vs page diagonal (absolute door width band). */
-const MIN_DOOR_GAP_DIAG = 0.004;
-const MAX_DOOR_GAP_DIAG = 0.08;
-const MIN_RECTANGULARITY = 0.55;
-const MIN_AXIS_ALIGNED = 0.7;
-const MAX_ASPECT = 6;
-const MIN_ROOM_SCORE = 0.62;
-const AXIS_ANGLE_TOL_DEG = 12;
+/** Door opening as a fraction of the room perimeter (score bonus, not required). */
+const MIN_DOOR_GAP_FRAC = 0.005;
+const MAX_DOOR_GAP_FRAC = 0.35;
+/** Nearly-closed open paths: gap vs page diagonal. */
+const MIN_DOOR_GAP_DIAG = 0.002;
+const MAX_DOOR_GAP_DIAG = 0.15;
+/** Soft shape gates — real CAD rooms are often imperfect. */
+const MIN_RECTANGULARITY = 0.3;
+const MIN_AXIS_ALIGNED = 0.45;
+const MAX_ASPECT = 10;
+const MIN_ROOM_SCORE = 0.42;
+const AXIS_ANGLE_TOL_DEG = 20;
+/** Reject shapes whose bbox covers almost the whole page (title/border frames). */
+const MAX_BBOX_COVERAGE = 0.92;
 
 /** DrawOPS packed into constructPath path buffers (pdf.js). */
 const DrawOPS = {
@@ -150,50 +151,56 @@ export async function detectRoomsFromPdfBytes(
     }
 
     notes.push(
-      "Candidates are filtered to axis-aligned, room-sized wall loops (including door openings).",
+      "Candidates prefer room-sized wall loops (closed or with a door gap); tiny symbols and page frames are dropped.",
     );
 
     type Scored = PdfDetectCandidate & { score: number };
     const scored: Scored[] = [];
-    let rejected = 0;
+    const rejectReasons: Record<string, number> = {};
+
+    const reject = (reason: string) => {
+      rejectReasons[reason] = (rejectReasons[reason] ?? 0) + 1;
+    };
 
     for (const path of paths) {
       const simplified = simplifyCollinear(path.points);
       if (simplified.length < MIN_VERTICES || simplified.length > MAX_VERTICES) {
-        rejected += 1;
+        reject("vertex_count");
         continue;
       }
 
       const areaAbs = Math.abs(polygonArea(simplified));
       const areaNorm = areaAbs / pageArea;
-      if (areaNorm < MIN_AREA || areaNorm > MAX_AREA) {
-        rejected += 1;
+      if (areaNorm < MIN_AREA) {
+        reject("too_small");
+        continue;
+      }
+      if (areaNorm > MAX_AREA) {
+        reject("too_large");
+        continue;
+      }
+
+      const pdfBbox = bboxOf(simplified);
+      const bboxCoverage =
+        ((pdfBbox.maxX - pdfBbox.minX) / pageWidth) *
+        ((pdfBbox.maxY - pdfBbox.minY) / pageHeight);
+      if (bboxCoverage >= MAX_BBOX_COVERAGE) {
+        reject("page_frame");
         continue;
       }
 
       const metrics = roomMetrics(simplified, path.doorGap, pageDiagonalLen);
       if (!metrics) {
-        rejected += 1;
+        reject("shape");
         continue;
       }
 
       const ringPdf = closeRing(simplified.slice(0, MAX_POINTS_PER_RING));
       const label = suggestLabel(ringPdf, texts, nearestThreshold);
-
-      // Prefer wall loops with door openings; plain closed boxes need a label or more area.
-      if (
-        !metrics.hasDoorGap &&
-        !label.value &&
-        areaNorm < MIN_CLOSED_UNLABELED_AREA
-      ) {
-        rejected += 1;
-        continue;
-      }
-
       const score = roomScore(metrics, Boolean(label.value), path.closedExplicitly);
 
       if (score < MIN_ROOM_SCORE) {
-        rejected += 1;
+        reject("low_score");
         continue;
       }
 
@@ -230,13 +237,20 @@ export async function detectRoomsFromPdfBytes(
       notes.push(`Candidate list capped at ${MAX_CANDIDATES}.`);
     }
 
-    if (rejected > 0) {
-      notes.push(`Filtered out ${rejected} non-room-like shape(s) (furniture, frames, symbols, etc.).`);
+    const rejectedTotal = Object.values(rejectReasons).reduce((sum, n) => sum + n, 0);
+    if (rejectedTotal > 0) {
+      const summary = Object.entries(rejectReasons)
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, count]) => `${reason}=${count}`)
+        .join(", ");
+      notes.push(`Filtered ${rejectedTotal} path(s): ${summary}.`);
     }
+
+    notes.push(`Parsed ${paths.length} closed/nearly-closed path(s); kept ${candidates.length}.`);
 
     if (candidates.length === 0) {
       notes.push(
-        "No room candidates passed wall/door filters. The plan may use open wall networks, hatches, or non-axis-aligned outlines.",
+        "No room candidates passed filters. If the plan draws walls as separate segments (not room loops), vector detect cannot form rooms yet.",
       );
     }
 
@@ -345,13 +359,14 @@ function decodeDrawOps(data: ArrayLike<number>, ctm: number[], pageDiagonal: num
     const minGap = MIN_DOOR_GAP_DIAG * pageDiagonal;
     const maxGap = MAX_DOOR_GAP_DIAG * pageDiagonal;
 
-    // Nearly-closed wall loop with a door-sized opening.
-    if (gap >= minGap && gap <= maxGap) {
-      out.push({ points: current, closedExplicitly: false, doorGap: gap });
-    } else if (gap <= minGap) {
+    if (gap <= minGap) {
       // Effectively closed without closePath.
-      out.push({ points: current, closedExplicitly: false, doorGap: null });
+      out.push({ points: current, closedExplicitly: true, doorGap: null });
+    } else if (gap <= maxGap) {
+      // Nearly-closed wall loop — treat gap as a possible door opening.
+      out.push({ points: current, closedExplicitly: false, doorGap: gap });
     }
+    // Larger gaps are open polylines / wall runs, not room loops.
 
     current = [];
     start = null;
@@ -476,17 +491,17 @@ function roomMetrics(points: Point[], doorGap: number | null, pageDiagonal: numb
 
 function roomScore(metrics: RoomMetrics, hasLabel: boolean, closedExplicitly: boolean) {
   let score = 0;
-  score += 0.35 * metrics.rectangularity;
-  score += 0.3 * metrics.axisAligned;
+  score += 0.3 * metrics.rectangularity;
+  score += 0.25 * metrics.axisAligned;
   score += 0.1 * Math.max(0, 1 - (metrics.aspect - 1) / (MAX_ASPECT - 1));
 
-  if (metrics.hasDoorGap) {
-    score += 0.18;
-  } else if (closedExplicitly) {
-    // Fully closed room outline without an obvious door gap — still valid but weaker.
-    score += 0.08;
+  // Closed room polylines are the common CAD case; door gaps are a bonus, not required.
+  if (closedExplicitly) {
+    score += 0.2;
   }
-
+  if (metrics.hasDoorGap) {
+    score += 0.15;
+  }
   if (hasLabel) {
     score += 0.12;
   }
@@ -522,6 +537,8 @@ function axisAlignedEdgeRatio(points: Point[]) {
   let aligned = 0;
   let total = 0;
   const tol = (AXIS_ANGLE_TOL_DEG * Math.PI) / 180;
+  const perimeter = polygonPerimeter(points);
+  const minSeg = Math.max(COLLINEAR_EPSILON, perimeter * 0.01);
 
   for (let i = 0; i < points.length; i++) {
     const a = points[i];
@@ -529,7 +546,8 @@ function axisAlignedEdgeRatio(points: Point[]) {
     const dx = b[0] - a[0];
     const dy = b[1] - a[1];
     const len = Math.hypot(dx, dy);
-    if (len < COLLINEAR_EPSILON) {
+    // Ignore tiny segments from curve approximation / CAD noise.
+    if (len < minSeg) {
       continue;
     }
 
