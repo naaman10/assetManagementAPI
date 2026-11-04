@@ -260,6 +260,13 @@
       "when": 1793870000000,
       "tag": "0036_location_plan_aps",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793950000000,
+      "tag": "0037_project_type_focus",
+      "breakpoints": true
     }
   ]
 }

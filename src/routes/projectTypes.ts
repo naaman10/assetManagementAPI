@@ -6,8 +6,12 @@ import { requirePermission } from "../auth/middleware.js";
 import {
   PROJECT_TYPE_FIELD_DEFINITIONS,
   PROJECT_TYPE_FIELD_SOURCES,
+  PROJECT_TYPE_FOCUSES,
   catalogKey,
+  definitionsForFocus,
+  focusForSource,
   type ProjectTypeFieldSource,
+  type ProjectTypeFocus,
 } from "../db/projectTypeFieldCatalog.js";
 import { projectTypeFields, projectTypes, projects } from "../db/schema/index.js";
 import type { Database } from "../db/types.js";
@@ -18,6 +22,7 @@ const code = z.string().trim().min(1).max(50);
 const name = z.string().trim().min(1).max(255);
 const description = z.string().trim().max(5000).nullable().optional();
 const sortOrder = z.number().int().min(-2_147_483_648).max(2_147_483_647);
+const focus = z.enum(PROJECT_TYPE_FOCUSES);
 
 const fieldSource = z.enum(PROJECT_TYPE_FIELD_SOURCES);
 const configuredFieldSchema = z.object({
@@ -31,6 +36,7 @@ const createProjectTypeSchema = z.object({
   code,
   name,
   description,
+  focus: focus.optional(),
   sortOrder: sortOrder.optional(),
   isActive: z.boolean().optional(),
 });
@@ -40,6 +46,7 @@ const updateProjectTypeSchema = z
     code: code.optional(),
     name: name.optional(),
     description,
+    focus: focus.optional(),
     sortOrder: sortOrder.optional(),
     isActive: z.boolean().optional(),
     fields: z.array(configuredFieldSchema).optional(),
@@ -58,13 +65,27 @@ const catalogByKey = new Map(
 export const projectTypeRoutes = new Hono<AppEnv>();
 
 projectTypeRoutes.get("/project-type-field-catalog", requirePermission(PROJECT_TYPES_VIEW), async (c) => {
+  const focusParam = c.req.query("focus");
+  let selectedFocus: ProjectTypeFocus | null = null;
+
+  if (focusParam != null && focusParam.length > 0) {
+    const parsed = focus.safeParse(focusParam);
+
+    if (!parsed.success) {
+      return c.json({ error: "focus must be assets or sites_locations." }, 400);
+    }
+
+    selectedFocus = parsed.data;
+  }
+
   return c.json({
-    fields: PROJECT_TYPE_FIELD_DEFINITIONS.map((definition) => ({
+    fields: definitionsForFocus(selectedFocus).map((definition) => ({
       source: definition.source,
       key: definition.fieldKey,
       label: definition.label,
       type: definition.type,
       description: definition.description,
+      focus: definition.focus,
     })),
   });
 });
@@ -96,6 +117,7 @@ projectTypeRoutes.post("/project-types", requirePermission(PROJECT_TYPES_CREATE)
         code: parsed.data.code,
         name: parsed.data.name,
         description: blankToNull(parsed.data.description),
+        focus: parsed.data.focus ?? "assets",
         sortOrder: parsed.data.sortOrder ?? 0,
         isActive: parsed.data.isActive ?? true,
       })
@@ -147,8 +169,17 @@ projectTypeRoutes.patch("/project-types/:id", requirePermission(PROJECT_TYPES_ED
     return c.json({ error: "Project type not found." }, 404);
   }
 
-  if (parsed.data.fields !== undefined) {
-    const fieldErrors = validateConfiguredFields(parsed.data.fields);
+  const nextFocus = (parsed.data.focus ?? current.focus) as ProjectTypeFocus;
+  const nextFields =
+    parsed.data.fields ??
+    current.fields.map((field) => ({
+      source: field.source as ProjectTypeFieldSource,
+      key: field.key,
+      required: field.required,
+    }));
+
+  if (parsed.data.focus !== undefined || parsed.data.fields !== undefined) {
+    const fieldErrors = validateConfiguredFields(nextFields, nextFocus);
 
     if (fieldErrors) {
       return c.json({ error: "Invalid request", details: { fields: fieldErrors } }, 400);
@@ -161,6 +192,7 @@ projectTypeRoutes.patch("/project-types/:id", requirePermission(PROJECT_TYPES_ED
         parsed.data.code !== undefined ||
         parsed.data.name !== undefined ||
         parsed.data.description !== undefined ||
+        parsed.data.focus !== undefined ||
         parsed.data.sortOrder !== undefined ||
         parsed.data.isActive !== undefined;
 
@@ -172,6 +204,7 @@ projectTypeRoutes.patch("/project-types/:id", requirePermission(PROJECT_TYPES_ED
             name: parsed.data.name ?? current.name,
             description:
               parsed.data.description === undefined ? current.description : blankToNull(parsed.data.description),
+            focus: nextFocus,
             sortOrder: parsed.data.sortOrder ?? current.sortOrder,
             isActive: parsed.data.isActive ?? current.isActive,
             updatedAt: new Date(),
@@ -304,6 +337,7 @@ function presentProjectType(row: typeof projectTypes.$inferSelect, fields: Prese
     code: row.code,
     name: row.name,
     description: row.description,
+    focus: row.focus as ProjectTypeFocus,
     sortOrder: row.sortOrder,
     isActive: row.isActive,
     fields,
@@ -312,7 +346,10 @@ function presentProjectType(row: typeof projectTypes.$inferSelect, fields: Prese
   };
 }
 
-function validateConfiguredFields(fields: Array<{ source: ProjectTypeFieldSource; key: string }>) {
+function validateConfiguredFields(
+  fields: Array<{ source: ProjectTypeFieldSource; key: string }>,
+  projectFocus: ProjectTypeFocus,
+) {
   const errors: string[] = [];
   const seen = new Set<string>();
 
@@ -328,6 +365,13 @@ function validateConfiguredFields(fields: Array<{ source: ProjectTypeFieldSource
 
     if (!catalogByKey.has(key)) {
       errors.push(`Unknown field ${field.source}.${field.key}.`);
+      continue;
+    }
+
+    if (focusForSource(field.source) !== projectFocus) {
+      errors.push(
+        `Field ${field.source}.${field.key} is not valid for focus ${projectFocus}. Clear or replace fields when changing focus.`,
+      );
     }
   }
 

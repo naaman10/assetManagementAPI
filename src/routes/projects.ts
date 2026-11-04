@@ -7,6 +7,7 @@ import { requireUser } from "../auth/middleware.js";
 import { listProjectActivity } from "../db/auditQuery.js";
 import { deleteUnconductedSurveys } from "../db/deleteUnconductedSurveys.js";
 import { removeSurveyPhotos } from "../db/surveyPhotoObjects.js";
+import { PROJECT_TYPE_FOCUSES, type ProjectTypeFocus } from "../db/projectTypeFieldCatalog.js";
 import {
   PROJECT_ASSET_REVIEW_STATUSES,
   PROJECT_STATUSES,
@@ -16,7 +17,10 @@ import {
   locations,
   nrm3Classifications,
   projectAssets,
+  projectLocationRecords,
+  projectLocations,
   projectMembers,
+  projectSites,
   projectTypes,
   projects,
   sites,
@@ -41,6 +45,8 @@ const optionalDate = z
     message: "Enter a date as YYYY-MM-DD.",
   });
 const assetIds = z.array(z.uuid()).max(500);
+const siteIdsSchema = z.array(z.uuid()).max(500);
+const locationIdsSchema = z.array(z.uuid()).max(500);
 const memberIds = z.array(z.uuid()).max(500);
 
 const createProjectSchema = z.object({
@@ -54,6 +60,8 @@ const createProjectSchema = z.object({
   leadUserId: z.uuid().nullable().optional(),
   memberIds: memberIds.optional(),
   assetIds: assetIds.optional(),
+  siteIds: siteIdsSchema.optional(),
+  locationIds: locationIdsSchema.optional(),
 });
 
 const updateProjectSchema = z
@@ -68,6 +76,8 @@ const updateProjectSchema = z
     leadUserId: z.uuid().nullable().optional(),
     memberIds: memberIds.optional(),
     assetIds: assetIds.optional(),
+    siteIds: siteIdsSchema.optional(),
+    locationIds: locationIdsSchema.optional(),
   })
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
     message: "No changes were provided.",
@@ -120,7 +130,9 @@ projectRoutes.post("/clients/:id/projects", requireUser, async (c) => {
     return c.json({ error: "The due date must be on or after the start date." }, 400);
   }
 
-  if (!(await projectTypeExists(db, parsed.data.projectTypeId))) {
+  const projectType = await loadProjectTypeFocus(db, parsed.data.projectTypeId);
+
+  if (!projectType) {
     return c.json({ error: "Project type not found." }, 404);
   }
 
@@ -136,10 +148,38 @@ projectRoutes.post("/clients/:id/projects", requireUser, async (c) => {
     return c.json({ error: "Member not found." }, 404);
   }
 
-  const linkedAssetIds = await assetsOnClient(db, clientId, parsed.data.assetIds ?? []);
+  const attachmentError = validateAttachmentIdsForFocus(projectType.focus, {
+    assetIds: parsed.data.assetIds,
+    siteIds: parsed.data.siteIds,
+    locationIds: parsed.data.locationIds,
+  });
 
-  if (!linkedAssetIds) {
-    return c.json({ error: "Asset not found." }, 404);
+  if (attachmentError) {
+    return c.json({ error: attachmentError }, 400);
+  }
+
+  let linkedAssetIds: string[] = [];
+  let sitesLocationsLinks: SitesLocationsLinks | null = null;
+
+  if (projectType.focus === "assets") {
+    const resolved = await assetsOnClient(db, clientId, parsed.data.assetIds ?? []);
+
+    if (!resolved) {
+      return c.json({ error: "Asset not found." }, 404);
+    }
+
+    linkedAssetIds = resolved;
+  } else {
+    const resolved = await resolveSitesLocationsLinks(db, clientId, {
+      siteIds: parsed.data.siteIds ?? [],
+      locationIds: parsed.data.locationIds ?? [],
+    });
+
+    if (!resolved) {
+      return c.json({ error: "Site or location not found." }, 404);
+    }
+
+    sitesLocationsLinks = resolved;
   }
 
   const [created] = await db.transaction(async (tx) => {
@@ -164,6 +204,10 @@ projectRoutes.post("/clients/:id/projects", requireUser, async (c) => {
 
     if (row && linkedAssetIds.length > 0) {
       await tx.insert(projectAssets).values(linkedAssetIds.map((assetId) => ({ projectId: row.id, assetId })));
+    }
+
+    if (row && sitesLocationsLinks) {
+      await replaceProjectSitesLocations(tx, row.id, sitesLocationsLinks);
     }
 
     return [row];
@@ -256,6 +300,19 @@ projectRoutes.patch("/projects/:projectId/assets/:assetId", requireUser, async (
 
   const db = c.get("services").db;
   const user = c.get("user");
+  const projectRow = await loadProjectRow(db, projectId);
+
+  if (!projectRow || !(await clientIsVisible(db, user, projectRow.clientId))) {
+    return c.json({ error: "Not found." }, 404);
+  }
+
+  if (projectRow.projectTypeFocus === "sites_locations") {
+    return c.json(
+      { error: "This project uses sites and locations review, not asset review." },
+      400,
+    );
+  }
+
   const linked = await loadProjectAssetSummary(db, user, projectId, assetId);
 
   if (!linked) {
@@ -306,7 +363,10 @@ projectRoutes.patch("/projects/:id", requireUser, async (c) => {
     return c.json({ error: "The due date must be on or after the start date." }, 400);
   }
 
-  if (parsed.data.projectTypeId && !(await projectTypeExists(db, parsed.data.projectTypeId))) {
+  const nextProjectTypeId = parsed.data.projectTypeId ?? current.projectTypeId;
+  const projectType = await loadProjectTypeFocus(db, nextProjectTypeId);
+
+  if (!projectType) {
     return c.json({ error: "Project type not found." }, 404);
   }
 
@@ -323,11 +383,47 @@ projectRoutes.patch("/projects/:id", requireUser, async (c) => {
     return c.json({ error: "Member not found." }, 404);
   }
 
-  const linkedAssetIds =
-    parsed.data.assetIds === undefined ? null : await assetsOnClient(db, current.client.id, parsed.data.assetIds);
+  const hasAttachmentUpdate =
+    parsed.data.assetIds !== undefined ||
+    parsed.data.siteIds !== undefined ||
+    parsed.data.locationIds !== undefined;
 
-  if (parsed.data.assetIds !== undefined && !linkedAssetIds) {
-    return c.json({ error: "Asset not found." }, 404);
+  if (hasAttachmentUpdate) {
+    const attachmentError = validateAttachmentIdsForFocus(projectType.focus, {
+      assetIds: parsed.data.assetIds,
+      siteIds: parsed.data.siteIds,
+      locationIds: parsed.data.locationIds,
+    });
+
+    if (attachmentError) {
+      return c.json({ error: attachmentError }, 400);
+    }
+  }
+
+  let linkedAssetIds: string[] | null = null;
+  let sitesLocationsLinks: SitesLocationsLinks | null = null;
+
+  if (hasAttachmentUpdate && projectType.focus === "assets") {
+    const resolved = await assetsOnClient(db, current.client.id, parsed.data.assetIds ?? []);
+
+    if (!resolved) {
+      return c.json({ error: "Asset not found." }, 404);
+    }
+
+    linkedAssetIds = resolved;
+  }
+
+  if (hasAttachmentUpdate && projectType.focus === "sites_locations") {
+    const resolved = await resolveSitesLocationsLinks(db, current.client.id, {
+      siteIds: parsed.data.siteIds ?? [],
+      locationIds: parsed.data.locationIds ?? [],
+    });
+
+    if (!resolved) {
+      return c.json({ error: "Site or location not found." }, 404);
+    }
+
+    sitesLocationsLinks = resolved;
   }
 
   await db.transaction(async (tx) => {
@@ -336,7 +432,7 @@ projectRoutes.patch("/projects/:id", requireUser, async (c) => {
       .set({
         title: parsed.data.title ?? current.title,
         projectReference: parsed.data.projectReference ?? current.projectReference,
-        projectTypeId: parsed.data.projectTypeId ?? current.projectTypeId,
+        projectTypeId: nextProjectTypeId,
         status: parsed.data.status ?? current.status,
         description: parsed.data.description === undefined ? current.description : blankToNull(parsed.data.description),
         startDate,
@@ -371,6 +467,10 @@ projectRoutes.patch("/projects/:id", requireUser, async (c) => {
       }
 
       await deleteUnconductedSurveys(tx, removedPairs);
+    }
+
+    if (sitesLocationsLinks) {
+      await replaceProjectSitesLocations(tx, id, sitesLocationsLinks);
     }
   });
 
@@ -475,6 +575,10 @@ async function loadProjectAssetSummary(db: Database, user: AuthUser, projectId: 
 }
 
 async function buildProjectDownload(db: Database, row: ProjectRow) {
+  const focus = (PROJECT_TYPE_FOCUSES.includes(row.projectTypeFocus as ProjectTypeFocus)
+    ? row.projectTypeFocus
+    : "assets") as ProjectTypeFocus;
+
   const memberRows = await db
     .select({
       id: users.id,
@@ -485,6 +589,40 @@ async function buildProjectDownload(db: Database, row: ProjectRow) {
     .innerJoin(users, eq(projectMembers.userId, users.id))
     .where(eq(projectMembers.projectId, row.id))
     .orderBy(asc(users.name), asc(users.email));
+
+  if (focus === "sites_locations") {
+    const presented = await presentProjects(db, [row]);
+    const project = presented[0];
+
+    return {
+      id: row.id,
+      title: row.title,
+      projectReference: row.projectReference,
+      projectTypeId: row.projectTypeId,
+      projectType: {
+        id: row.projectTypeId,
+        code: row.projectTypeCode,
+        name: row.projectTypeName,
+        focus,
+      },
+      status: row.status,
+      description: row.description,
+      startDate: row.startDate,
+      dueDate: row.dueDate,
+      lead: row.leadUserId && row.leadEmail ? { id: row.leadUserId, email: row.leadEmail, name: row.leadName } : null,
+      members: memberRows.map((member) => ({
+        id: member.id,
+        email: member.email,
+        name: member.name,
+      })),
+      client: { id: row.clientId, name: row.clientName },
+      assets: [] as DownloadAsset[],
+      sites: project?.sites ?? [],
+      locations: project?.locations ?? [],
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
 
   const linkedAssets = await db
     .select({
@@ -617,6 +755,7 @@ async function buildProjectDownload(db: Database, row: ProjectRow) {
       id: row.projectTypeId,
       code: row.projectTypeCode,
       name: row.projectTypeName,
+      focus,
     },
     status: row.status,
     description: row.description,
@@ -631,6 +770,7 @@ async function buildProjectDownload(db: Database, row: ProjectRow) {
     client: { id: row.clientId, name: row.clientName },
     assets: downloadAssets,
     sites: downloadSites,
+    locations: [] as ProjectLinkedLocation[],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -857,6 +997,7 @@ function projectQuery(db: Database) {
       projectTypeId: projects.projectTypeId,
       projectTypeCode: projectTypes.code,
       projectTypeName: projectTypes.name,
+      projectTypeFocus: projectTypes.focus,
       leadUserId: projects.leadUserId,
       leadEmail: users.email,
       leadName: users.name,
@@ -877,8 +1018,11 @@ function projectQuery(db: Database) {
 
 async function presentProjects(db: Database, rows: ProjectRow[]) {
   const ids = rows.map((row) => row.id);
+  const assetFocusedIds = rows.filter((row) => row.projectTypeFocus === "assets").map((row) => row.id);
+  const siteFocusedIds = rows.filter((row) => row.projectTypeFocus === "sites_locations").map((row) => row.id);
+
   const links =
-    ids.length === 0
+    assetFocusedIds.length === 0
       ? []
       : await db
           .select({
@@ -896,7 +1040,7 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
           .innerJoin(assets, eq(projectAssets.assetId, assets.id))
           .innerJoin(locations, eq(assets.locationId, locations.id))
           .innerJoin(sites, eq(locations.siteId, sites.id))
-          .where(inArray(projectAssets.projectId, ids))
+          .where(inArray(projectAssets.projectId, assetFocusedIds))
           .orderBy(asc(assets.tag), asc(assets.assetName));
 
   const assetsByProject = new Map<string, ProjectAsset[]>();
@@ -918,9 +1062,9 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
     linksByProject.set(link.projectId, projectLinks);
   }
 
-  const siteIds = [...new Set(links.map((link) => link.siteId))];
-  const locationRows =
-    siteIds.length === 0
+  const assetSiteIds = [...new Set(links.map((link) => link.siteId))];
+  const assetLocationRows =
+    assetSiteIds.length === 0
       ? []
       : await db
           .select({
@@ -933,14 +1077,130 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
             status: locations.status,
           })
           .from(locations)
-          .where(inArray(locations.siteId, siteIds))
+          .where(inArray(locations.siteId, assetSiteIds))
           .orderBy(asc(locations.name), asc(locations.locationCode));
 
-  const locationsById = new Map(locationRows.map((row) => [row.id, row]));
+  const assetLocationsById = new Map(assetLocationRows.map((row) => [row.id, row]));
   const sitesByProject = new Map<string, ProjectSite[]>();
 
   for (const [projectId, projectLinks] of linksByProject) {
-    sitesByProject.set(projectId, buildProjectSites(projectLinks, locationsById));
+    sitesByProject.set(projectId, buildProjectSites(projectLinks, assetLocationsById));
+  }
+
+  const linkedProjectSites =
+    siteFocusedIds.length === 0
+      ? []
+      : await db
+          .select({
+            projectId: projectSites.projectId,
+            id: sites.id,
+            name: sites.name,
+            reference: sites.reference,
+          })
+          .from(projectSites)
+          .innerJoin(sites, eq(projectSites.siteId, sites.id))
+          .where(inArray(projectSites.projectId, siteFocusedIds))
+          .orderBy(asc(sites.name));
+
+  const linkedProjectLocations =
+    siteFocusedIds.length === 0
+      ? []
+      : await db
+          .select({
+            projectId: projectLocations.projectId,
+            id: locations.id,
+            siteId: locations.siteId,
+            parentLocationId: locations.parentLocationId,
+            locationCode: locations.locationCode,
+            name: locations.name,
+            locationType: locations.locationType,
+            status: locations.status,
+            reviewStatus: projectLocations.reviewStatus,
+          })
+          .from(projectLocations)
+          .innerJoin(locations, eq(projectLocations.locationId, locations.id))
+          .where(inArray(projectLocations.projectId, siteFocusedIds))
+          .orderBy(asc(locations.name), asc(locations.locationCode));
+
+  const focusSitesByProject = new Map<string, ProjectSiteSummary[]>();
+  const focusLocationsByProject = new Map<string, ProjectLinkedLocation[]>();
+
+  for (const site of linkedProjectSites) {
+    const list = focusSitesByProject.get(site.projectId) ?? [];
+    list.push({ id: site.id, name: site.name, reference: site.reference });
+    focusSitesByProject.set(site.projectId, list);
+  }
+
+  for (const location of linkedProjectLocations) {
+    const list = focusLocationsByProject.get(location.projectId) ?? [];
+    list.push({
+      id: location.id,
+      siteId: location.siteId,
+      parentLocationId: location.parentLocationId,
+      locationCode: location.locationCode,
+      name: location.name,
+      locationType: location.locationType,
+      status: location.status,
+      reviewStatus: location.reviewStatus,
+    });
+    focusLocationsByProject.set(location.projectId, list);
+  }
+
+  const inferredSiteIds = [
+    ...new Set([
+      ...linkedProjectSites.map((site) => site.id),
+      ...linkedProjectLocations.map((location) => location.siteId),
+    ]),
+  ];
+  const inferredSiteRows =
+    inferredSiteIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: sites.id,
+            name: sites.name,
+            reference: sites.reference,
+          })
+          .from(sites)
+          .where(inArray(sites.id, inferredSiteIds));
+  const inferredSitesById = new Map(inferredSiteRows.map((site) => [site.id, site]));
+
+  for (const projectId of siteFocusedIds) {
+    const siteSummaries = focusSitesByProject.get(projectId) ?? [];
+    const projectLocationsList = focusLocationsByProject.get(projectId) ?? [];
+    const locationsById = new Map(
+      projectLocationsList.map((location) => [
+        location.id,
+        {
+          id: location.id,
+          siteId: location.siteId,
+          parentLocationId: location.parentLocationId,
+          locationCode: location.locationCode,
+          name: location.name,
+          locationType: location.locationType,
+          status: location.status,
+        },
+      ]),
+    );
+    const siteMeta = new Map(siteSummaries.map((site) => [site.id, site]));
+
+    for (const location of projectLocationsList) {
+      if (!siteMeta.has(location.siteId)) {
+        const inferred = inferredSitesById.get(location.siteId);
+        if (inferred) {
+          siteMeta.set(location.siteId, {
+            id: inferred.id,
+            name: inferred.name,
+            reference: inferred.reference,
+          });
+        }
+      }
+    }
+
+    sitesByProject.set(
+      projectId,
+      buildSitesLocationsTree([...siteMeta.values()], projectLocationsList, locationsById),
+    );
   }
 
   const memberLinks =
@@ -969,28 +1229,36 @@ async function presentProjects(db: Database, rows: ProjectRow[]) {
     membersByProject.set(link.projectId, list);
   }
 
-  return rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    projectReference: row.projectReference,
-    projectTypeId: row.projectTypeId,
-    projectType: {
-      id: row.projectTypeId,
-      code: row.projectTypeCode,
-      name: row.projectTypeName,
-    },
-    status: row.status,
-    description: row.description,
-    startDate: row.startDate,
-    dueDate: row.dueDate,
-    lead: row.leadUserId && row.leadEmail ? { id: row.leadUserId, email: row.leadEmail, name: row.leadName } : null,
-    members: membersByProject.get(row.id) ?? [],
-    client: { id: row.clientId, name: row.clientName },
-    assets: assetsByProject.get(row.id) ?? [],
-    sites: sitesByProject.get(row.id) ?? [],
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }));
+  return rows.map((row) => {
+    const focus = (PROJECT_TYPE_FOCUSES.includes(row.projectTypeFocus as ProjectTypeFocus)
+      ? row.projectTypeFocus
+      : "assets") as ProjectTypeFocus;
+
+    return {
+      id: row.id,
+      title: row.title,
+      projectReference: row.projectReference,
+      projectTypeId: row.projectTypeId,
+      projectType: {
+        id: row.projectTypeId,
+        code: row.projectTypeCode,
+        name: row.projectTypeName,
+        focus,
+      },
+      status: row.status,
+      description: row.description,
+      startDate: row.startDate,
+      dueDate: row.dueDate,
+      lead: row.leadUserId && row.leadEmail ? { id: row.leadUserId, email: row.leadEmail, name: row.leadName } : null,
+      members: membersByProject.get(row.id) ?? [],
+      client: { id: row.clientId, name: row.clientName },
+      assets: focus === "assets" ? (assetsByProject.get(row.id) ?? []) : [],
+      sites: sitesByProject.get(row.id) ?? [],
+      locations: focus === "sites_locations" ? (focusLocationsByProject.get(row.id) ?? []) : [],
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  });
 }
 
 function buildProjectSites(
@@ -1134,9 +1402,299 @@ async function visibleClient(db: Database, user: AuthUser, clientId: string) {
   return client;
 }
 
-async function projectTypeExists(db: Database, id: string) {
-  const [row] = await db.select({ id: projectTypes.id }).from(projectTypes).where(eq(projectTypes.id, id)).limit(1);
-  return Boolean(row);
+async function loadProjectTypeFocus(db: Database, id: string) {
+  const [row] = await db
+    .select({ id: projectTypes.id, focus: projectTypes.focus })
+    .from(projectTypes)
+    .where(eq(projectTypes.id, id))
+    .limit(1);
+
+  if (!row) {
+    return null;
+  }
+
+  const focus = PROJECT_TYPE_FOCUSES.includes(row.focus as ProjectTypeFocus)
+    ? (row.focus as ProjectTypeFocus)
+    : "assets";
+
+  return { id: row.id, focus };
+}
+
+function validateAttachmentIdsForFocus(
+  focus: ProjectTypeFocus,
+  ids: { assetIds?: string[]; siteIds?: string[]; locationIds?: string[] },
+) {
+  const hasAssets = ids.assetIds !== undefined;
+  const hasSites = ids.siteIds !== undefined;
+  const hasLocations = ids.locationIds !== undefined;
+
+  if (focus === "assets") {
+    if (hasSites || hasLocations) {
+      return "This project type focuses on assets. Do not send siteIds or locationIds.";
+    }
+    return null;
+  }
+
+  if (hasAssets) {
+    return "This project type focuses on sites and locations. Do not send assetIds.";
+  }
+
+  return null;
+}
+
+type SitesLocationsLinks = {
+  siteIds: string[];
+  locationIds: string[];
+  locationRows: Array<{
+    id: string;
+    siteId: string;
+    parentLocationId: string | null;
+    locationCode: string | null;
+    name: string | null;
+    locationType: string | null;
+    description: string | null;
+    department: string | null;
+    uprn: string | null;
+    address: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    status: string;
+  }>;
+};
+
+async function resolveSitesLocationsLinks(
+  db: Database,
+  clientId: string,
+  input: { siteIds: string[]; locationIds: string[] },
+): Promise<SitesLocationsLinks | null> {
+  const requestedSiteIds = [...new Set(input.siteIds)];
+  const requestedLocationIds = [...new Set(input.locationIds)];
+
+  if (requestedSiteIds.length > 0) {
+    const siteRows = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.clientId, clientId), inArray(sites.id, requestedSiteIds)));
+
+    if (siteRows.length !== requestedSiteIds.length) {
+      return null;
+    }
+  }
+
+  if (requestedLocationIds.length > 0) {
+    const locationCheck = await db
+      .select({ id: locations.id })
+      .from(locations)
+      .innerJoin(sites, eq(locations.siteId, sites.id))
+      .where(and(eq(sites.clientId, clientId), inArray(locations.id, requestedLocationIds)));
+
+    if (locationCheck.length !== requestedLocationIds.length) {
+      return null;
+    }
+  }
+
+  const locationIdSet = new Set(requestedLocationIds);
+
+  if (requestedSiteIds.length > 0) {
+    const underSites = await db
+      .select({ id: locations.id })
+      .from(locations)
+      .innerJoin(sites, eq(locations.siteId, sites.id))
+      .where(and(eq(sites.clientId, clientId), inArray(locations.siteId, requestedSiteIds)));
+
+    for (const row of underSites) {
+      locationIdSet.add(row.id);
+    }
+  }
+
+  const resolvedLocationIds = [...locationIdSet];
+  const locationRows =
+    resolvedLocationIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: locations.id,
+            siteId: locations.siteId,
+            parentLocationId: locations.parentLocationId,
+            locationCode: locations.locationCode,
+            name: locations.name,
+            locationType: locations.locationType,
+            description: locations.description,
+            department: locations.department,
+            uprn: locations.uprn,
+            address: locations.address,
+            latitude: locations.latitude,
+            longitude: locations.longitude,
+            status: locations.status,
+          })
+          .from(locations)
+          .where(inArray(locations.id, resolvedLocationIds));
+
+  if (locationRows.length !== resolvedLocationIds.length) {
+    return null;
+  }
+
+  const siteIdSet = new Set(requestedSiteIds);
+  for (const row of locationRows) {
+    siteIdSet.add(row.siteId);
+  }
+
+  return {
+    siteIds: [...siteIdSet],
+    locationIds: resolvedLocationIds,
+    locationRows,
+  };
+}
+
+async function replaceProjectSitesLocations(
+  tx: Database,
+  projectId: string,
+  links: SitesLocationsLinks,
+) {
+  const existingRecords = await tx
+    .select({ locationId: projectLocationRecords.locationId })
+    .from(projectLocationRecords)
+    .where(eq(projectLocationRecords.projectId, projectId));
+  const nextLocationIds = new Set(links.locationIds);
+  const removedLocationIds = existingRecords
+    .map((row) => row.locationId)
+    .filter((locationId) => !nextLocationIds.has(locationId));
+
+  await tx.delete(projectSites).where(eq(projectSites.projectId, projectId));
+  await tx.delete(projectLocations).where(eq(projectLocations.projectId, projectId));
+
+  if (removedLocationIds.length > 0) {
+    await tx
+      .delete(projectLocationRecords)
+      .where(
+        and(
+          eq(projectLocationRecords.projectId, projectId),
+          inArray(projectLocationRecords.locationId, removedLocationIds),
+        ),
+      );
+  }
+
+  if (links.siteIds.length > 0) {
+    await tx.insert(projectSites).values(links.siteIds.map((siteId) => ({ projectId, siteId })));
+  }
+
+  if (links.locationIds.length > 0) {
+    await tx
+      .insert(projectLocations)
+      .values(links.locationIds.map((locationId) => ({ projectId, locationId })));
+  }
+
+  const existingRecordIds = new Set(existingRecords.map((row) => row.locationId));
+  const toSeed = links.locationRows.filter((row) => !existingRecordIds.has(row.id));
+
+  if (toSeed.length > 0) {
+    await tx.insert(projectLocationRecords).values(
+      toSeed.map((row) => ({
+        projectId,
+        locationId: row.id,
+        siteId: row.siteId,
+        parentLocationId: row.parentLocationId,
+        locationCode: row.locationCode,
+        name: row.name,
+        locationType: row.locationType,
+        description: row.description,
+        department: row.department,
+        uprn: row.uprn,
+        address: row.address,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        status: row.status,
+      })),
+    );
+  }
+}
+
+function buildSitesLocationsTree(
+  siteSummaries: ProjectSiteSummary[],
+  linkedLocations: ProjectLinkedLocation[],
+  locationsById: Map<
+    string,
+    {
+      id: string;
+      siteId: string;
+      parentLocationId: string | null;
+      locationCode: string | null;
+      name: string | null;
+      locationType: string | null;
+      status: string;
+    }
+  >,
+): ProjectSite[] {
+  const reviewById = new Map(linkedLocations.map((location) => [location.id, location.reviewStatus]));
+  const nodes = new Map<string, ProjectLocationNode>();
+
+  for (const location of linkedLocations) {
+    const row = locationsById.get(location.id);
+
+    if (!row) {
+      continue;
+    }
+
+    nodes.set(location.id, {
+      id: row.id,
+      parentLocationId: row.parentLocationId,
+      locationCode: row.locationCode,
+      name: row.name,
+      locationType: row.locationType,
+      status: row.status,
+      reviewStatus: reviewById.get(location.id),
+      assets: [],
+      locations: [],
+    });
+  }
+
+  const rootsBySite = new Map<string, ProjectLocationNode[]>();
+
+  for (const node of nodes.values()) {
+    const location = locationsById.get(node.id);
+
+    if (!location) {
+      continue;
+    }
+
+    const parent = node.parentLocationId ? nodes.get(node.parentLocationId) : undefined;
+
+    if (parent) {
+      parent.locations.push(node);
+      continue;
+    }
+
+    const roots = rootsBySite.get(location.siteId) ?? [];
+    roots.push(node);
+    rootsBySite.set(location.siteId, roots);
+  }
+
+  const sortLocationNodes = (list: ProjectLocationNode[]) => {
+    list.sort((a, b) => {
+      const nameCompare = (a.name ?? "").localeCompare(b.name ?? "");
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+      return (a.locationCode ?? "").localeCompare(b.locationCode ?? "");
+    });
+
+    for (const node of list) {
+      sortLocationNodes(node.locations);
+    }
+  };
+
+  return [...siteSummaries]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((site) => {
+      const roots = rootsBySite.get(site.id) ?? [];
+      sortLocationNodes(roots);
+      return {
+        id: site.id,
+        name: site.name,
+        reference: site.reference,
+        locations: roots,
+      };
+    });
 }
 
 async function userExists(db: Database, id: string) {
@@ -1179,6 +1737,7 @@ type ProjectRow = {
   projectTypeId: string;
   projectTypeCode: string;
   projectTypeName: string;
+  projectTypeFocus: string;
   leadUserId: string | null;
   leadEmail: string | null;
   leadName: string | null;
@@ -1207,6 +1766,23 @@ type ProjectSiteAsset = {
   reviewStatus: string;
 };
 
+type ProjectLinkedLocation = {
+  id: string;
+  siteId: string;
+  parentLocationId: string | null;
+  locationCode: string | null;
+  name: string | null;
+  locationType: string | null;
+  status: string;
+  reviewStatus: string;
+};
+
+type ProjectSiteSummary = {
+  id: string;
+  name: string;
+  reference: string | null;
+};
+
 type ProjectLocationNode = {
   id: string;
   parentLocationId: string | null;
@@ -1214,6 +1790,7 @@ type ProjectLocationNode = {
   name: string | null;
   locationType: string | null;
   status: string;
+  reviewStatus?: string;
   assets: ProjectSiteAsset[];
   locations: ProjectLocationNode[];
 };

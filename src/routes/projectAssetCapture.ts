@@ -90,17 +90,22 @@ projectAssetCaptureRoutes.get("/projects/:projectId/assets/:assetId/capture", re
     return c.json({ error: "Not found." }, 404);
   }
 
-  const capture = await loadCapture(
-    c.get("services").db,
-    c.get("services").assets,
-    c.get("user"),
-    projectId,
-    assetId,
-  );
+  const db = c.get("services").db;
+  const user = c.get("user");
+  const context = await loadCaptureContext(db, user, projectId, assetId);
 
-  if (!capture) {
+  if (!context) {
     return c.json({ error: "Not found." }, 404);
   }
+
+  if (context.projectTypeFocus === "sites_locations") {
+    return c.json(
+      { error: "This project uses sites and locations capture, not asset capture." },
+      400,
+    );
+  }
+
+  const capture = await buildCaptureFromContext(db, c.get("services").assets, context);
 
   return c.json({ capture });
 });
@@ -125,6 +130,13 @@ projectAssetCaptureRoutes.put("/projects/:projectId/assets/:assetId/capture", re
 
   if (!context) {
     return c.json({ error: "Not found." }, 404);
+  }
+
+  if (context.projectTypeFocus === "sites_locations") {
+    return c.json(
+      { error: "This project uses sites and locations capture, not asset capture." },
+      400,
+    );
   }
 
   const assetValues = parsed.data.asset ?? {};
@@ -264,11 +276,13 @@ projectAssetCaptureRoutes.put("/projects/:projectId/assets/:assetId/capture", re
     return routeError(c, error);
   }
 
-  const capture = await loadCapture(db, c.get("services").assets, user, projectId, assetId);
+  const refreshed = await loadCaptureContext(db, user, projectId, assetId);
 
-  if (!capture) {
+  if (!refreshed) {
     return c.json({ error: "Not found." }, 404);
   }
+
+  const capture = await buildCaptureFromContext(db, c.get("services").assets, refreshed);
 
   return c.json({
     capture,
@@ -303,6 +317,7 @@ type CaptureContext = {
   projectTypeId: string;
   projectTypeCode: string;
   projectTypeName: string;
+  projectTypeFocus: string;
   clientId: string;
   reviewStatus: string;
   asset: {
@@ -324,25 +339,13 @@ type CaptureContext = {
   fields: ConfiguredField[];
 };
 
-async function loadCapture(
-  db: Database,
-  storage: AssetStorage,
-  user: AuthUser,
-  projectId: string,
-  assetId: string,
-) {
-  const context = await loadCaptureContext(db, user, projectId, assetId);
-
-  if (!context) {
-    return null;
-  }
-
+async function buildCaptureFromContext(db: Database, storage: AssetStorage, context: CaptureContext) {
   const assetValues = assetValueMap(context.asset);
   const needsPhotos = context.fields.some(
     (field) => field.source === "survey_record" && field.key === "photos",
   );
   const surveyPhotos = needsPhotos
-    ? await loadSurveyPhotosForCapture(db, storage, projectId, assetId)
+    ? await loadSurveyPhotosForCapture(db, storage, context.projectId, context.asset.id)
     : null;
 
   return {
@@ -444,6 +447,7 @@ async function loadCaptureContext(db: Database, user: AuthUser, projectId: strin
       projectTypeId: projects.projectTypeId,
       projectTypeCode: projectTypes.code,
       projectTypeName: projectTypes.name,
+      projectTypeFocus: projectTypes.focus,
       clientId: projects.clientId,
       assetId: assets.id,
       locationId: assets.locationId,
@@ -500,6 +504,7 @@ async function loadCaptureContext(db: Database, user: AuthUser, projectId: strin
     projectTypeId: row.projectTypeId,
     projectTypeCode: row.projectTypeCode,
     projectTypeName: row.projectTypeName,
+    projectTypeFocus: row.projectTypeFocus,
     clientId: row.clientId,
     reviewStatus: row.reviewStatus,
     asset: {
